@@ -173,7 +173,7 @@ test("focusing a managed workspace keeps its existing owner, including legacy op
   assert.ok((await readFile(`${f.log}.metadata`, "utf8")).includes(owner));
 });
 
-test("focus, close, and events preserve newline-ended owner tokens and labels with the real CLI", async (t) => {
+test("focus, close, and events preserve opaque owner tokens and labels with the real CLI", async (t) => {
   const f = await fixture(t);
   const env = await checkout(f);
   const repository = fileURLToPath(new URL("../../", import.meta.url));
@@ -182,9 +182,12 @@ test("focus, close, and events preserve newline-ended owner tokens and labels wi
   await writeFile(env.WF_BIN, '#!/bin/zsh\nexec "$TEST_REAL_WF" --state-dir "$TEST_REAL_STATE" "$@"\n', { mode: 0o700 });
   const runtimeEnv = { ...env, TEST_REAL_WF: join(repository, ".build/release/wf"), TEST_REAL_STATE: join(f.root, "state") };
   const allocation = JSON.parse((await exec(env.WF_BIN, ["--json", "start", "feature/labels", "--repo", env.TEST_CHECKOUT, "--path", join(f.root, "managed")], { env: runtimeEnv })).stdout);
-  for (const mode of ["close", "event"]) {
+  for (const option of ["--owner", "--path"]) {
+    await assert.rejects(exec(env.WF_BIN, ["--json", "retain", allocation.id, option, ""], { env: runtimeEnv }), new RegExp(`Missing value: ${option}`));
+  }
+  for (const mode of ["close", "event", "empty", "flag-like"]) {
     const owner = `herdr-workspace:w-test:${mode}\n`;
-    const label = "review\n\n";
+    const label = mode === "empty" ? "" : mode === "flag-like" ? "--owner" : "review\n\n";
     await exec(env.WF_BIN, ["--json", "retain", allocation.id, "--owner", owner, "--kind", "workspace", "--label", label], { env: runtimeEnv });
     await writeFile(`${f.log}.metadata`, JSON.stringify({ result: { workspace: { tokens: { wf_id: allocation.id, wf_owner: owner } } } }));
     const before = JSON.parse((await exec(env.WF_BIN, ["--json", "inspect", allocation.id], { env: runtimeEnv })).stdout);
