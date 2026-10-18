@@ -30,9 +30,12 @@ else
   done
   allocation=$("$wf_bin" --json start "$branch" --repo "$repo" "${start_args[@]}")
 fi
-id=$(print -rn -- "$allocation" | jq -er '.id')
-checkout=$(print -rn -- "$allocation" | jq -er '.path')
-primary=$(print -rn -- "$allocation" | jq -er '.repository')
+id=$(print -rn -- "$allocation" | jq -er '.id | strings | select(index("\u0000") == null) | . + "."')
+id=${id%.}
+checkout=$(print -rn -- "$allocation" | jq -er '.path | strings | select(index("\u0000") == null) | . + "."')
+checkout=${checkout%.}
+primary=$(print -rn -- "$allocation" | jq -er '.repository | strings | select(index("\u0000") == null) | . + "."')
+primary=${primary%.}
 provisional="herdr-opening:$(/usr/bin/uuidgen)"
 "$wf_bin" --json retain "$id" --owner "$provisional" --kind workspace --label 'Herdr workspace' >/dev/null
 if [[ "$is_existing" = 1 ]]; then
@@ -44,11 +47,14 @@ if [[ "$is_existing" = 1 ]]; then
   fi
 fi
 opened=$("$herdr_bin" worktree open --cwd "$primary" --path "$checkout" --label "$branch" --focus)
-workspace=$(print -rn -- "$opened" | jq -er '.result.workspace.workspace_id | strings | select(length > 0)')
+workspace=$(print -rn -- "$opened" | jq -er '.result.workspace.workspace_id | strings | select(length > 0 and index("\u0000") == null) | . + "."')
+workspace=${workspace%.}
 snapshot=$("$herdr_bin" workspace get "$workspace")
 tokens=$(print -rn -- "$snapshot" | jq -ce '.result.workspace | objects | (if .tokens == null then {} else .tokens end) | objects | select((.wf_id | . == null or type == "string") and (.wf_owner | . == null or type == "string"))')
-metadata_id=$(print -rn -- "$tokens" | jq -r '.wf_id // "" | strings')
-metadata_owner=$(print -rn -- "$tokens" | jq -r '.wf_owner // "" | strings')
+metadata_id=$(print -rn -- "$tokens" | jq -er '.wf_id // "" | strings | select(index("\u0000") == null) | . + "."')
+metadata_id=${metadata_id%.}
+metadata_owner=$(print -rn -- "$tokens" | jq -er '.wf_owner // "" | strings | select(index("\u0000") == null) | . + "."')
+metadata_owner=${metadata_owner%.}
 [[ -z "$metadata_id" || "$metadata_id" = "$id" ]] || { print -u2 'Workspace belongs to another allocation; owners preserved.'; exit 1; }
 if [[ "$metadata_id" = "$id" && -n "$metadata_owner" ]]; then
   owner=$metadata_owner
@@ -59,7 +65,8 @@ owner_args=(--label 'Herdr workspace')
 if print -rn -- "$allocation" | jq -e --arg owner "$owner" '.owners[$owner] != null' >/dev/null; then
   owner_args=()
   if print -rn -- "$allocation" | jq -e --arg owner "$owner" '.owners[$owner].label != null' >/dev/null; then
-    owner_label=$(print -rn -- "$allocation" | jq -r --arg owner "$owner" '.owners[$owner].label')
+    owner_label=$(print -rn -- "$allocation" | jq -er --arg owner "$owner" '.owners[$owner].label | strings | select(index("\u0000") == null) | . + "."')
+    owner_label=${owner_label%.}
     owner_args=(--label "$owner_label")
   fi
 fi

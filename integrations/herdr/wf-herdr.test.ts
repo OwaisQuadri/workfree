@@ -55,7 +55,7 @@ elif [[ "$1 $2" = 'workspace get' ]]; then
   fi
 elif [[ "$1 $2" = 'workspace report-metadata' ]]; then
   [[ "\${TEST_METADATA_WRITE_FAIL:-}" != 1 ]] || exit 1
-  printf '{"result":{"workspace":{"tokens":{"wf_id":"%s","wf_owner":"%s"}}}}\\n' "\${7#wf_id=}" "\${9#wf_owner=}" > "$metadata_file"
+  jq -cn --arg id "\${7#wf_id=}" --arg owner "\${9#wf_owner=}" '{result:{workspace:{tokens:{wf_id:$id,wf_owner:$owner}}}}' > "$metadata_file"
 elif [[ "$1 $2" = 'workspace close' ]]; then
   rm -f "$metadata_file"
 else
@@ -171,6 +171,38 @@ test("focusing a managed workspace keeps its existing owner, including legacy op
   assert.ok((await f.calls()).some((call) => call.endsWith(`--owner ${owner} --kind workspace --label `)));
   assert.deepEqual(activeWorkspaceOwners(await f.calls()), [owner]);
   assert.ok((await readFile(`${f.log}.metadata`, "utf8")).includes(owner));
+});
+
+test("focus, close, and events preserve newline-ended owner tokens and labels with the real CLI", async (t) => {
+  const f = await fixture(t);
+  const env = await checkout(f);
+  const repository = fileURLToPath(new URL("../../", import.meta.url));
+  await exec("swift", ["build", "-c", "release", "--product", "wf", "-Xswiftc", "-warnings-as-errors"], { cwd: repository });
+  await exec("git", ["-C", env.TEST_CHECKOUT, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "fixture"]);
+  await writeFile(env.WF_BIN, '#!/bin/zsh\nexec "$TEST_REAL_WF" --state-dir "$TEST_REAL_STATE" "$@"\n', { mode: 0o700 });
+  const runtimeEnv = { ...env, TEST_REAL_WF: join(repository, ".build/release/wf"), TEST_REAL_STATE: join(f.root, "state") };
+  const allocation = JSON.parse((await exec(env.WF_BIN, ["--json", "start", "feature/labels", "--repo", env.TEST_CHECKOUT, "--path", join(f.root, "managed")], { env: runtimeEnv })).stdout);
+  for (const mode of ["close", "event"]) {
+    const owner = `herdr-workspace:w-test:${mode}\n`;
+    const label = "review\n\n";
+    await exec(env.WF_BIN, ["--json", "retain", allocation.id, "--owner", owner, "--kind", "workspace", "--label", label], { env: runtimeEnv });
+    await writeFile(`${f.log}.metadata`, JSON.stringify({ result: { workspace: { tokens: { wf_id: allocation.id, wf_owner: owner } } } }));
+    const before = JSON.parse((await exec(env.WF_BIN, ["--json", "inspect", allocation.id], { env: runtimeEnv })).stdout);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await exec("/bin/zsh", [openScript, "--allocation", allocation.id], { env: runtimeEnv });
+      const after = JSON.parse((await exec(env.WF_BIN, ["--json", "inspect", allocation.id], { env: runtimeEnv })).stdout);
+      assert.equal(after.owners[owner].label, label);
+      assert.deepEqual(after.owners, before.owners);
+    }
+    if (mode === "close") {
+      await exec("/bin/zsh", [closeScript, "--close"], { env: runtimeEnv });
+    } else {
+      const payload = JSON.stringify({ data: { workspace: { tokens: { wf_id: allocation.id, wf_owner: owner } } } });
+      await exec("/bin/zsh", [eventScript], { env: { ...runtimeEnv, HERDR_PLUGIN_EVENT: "workspace.closed", HERDR_PLUGIN_EVENT_JSON: payload } });
+    }
+    const released = JSON.parse((await exec(env.WF_BIN, ["--json", "inspect", allocation.id], { env: runtimeEnv })).stdout);
+    assert.deepEqual(released.owners, allocation.owners);
+  }
 });
 
 test("focusing another allocation's workspace never overwrites metadata or releases protection", async (t) => {
