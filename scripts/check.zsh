@@ -6,7 +6,7 @@ swift test -Xswiftc -warnings-as-errors
 swift format lint --strict --recursive Package.swift Sources Tests scripts
 npm run typecheck
 npm test
-for script in scripts/*.zsh integrations/herdr/*.zsh; do
+for script in scripts/*.zsh integrations/{herdr,pi}/*.zsh; do
   /bin/zsh -n "$script"
 done
 git diff --check

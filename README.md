@@ -1,130 +1,81 @@
 # Workfree
 
-Explicit ownership for Git worktrees, with cleanup on the final safe release.
+Git worktrees with explicit owners. Opt-in cleanup frees a checkout after its last owner releases it and safety checks pass. The branch stays.
 
-Workfree works with ordinary Git worktrees.
-It recommends [simgit](https://github.com/abendrothj/simgit) for copy-on-write storage.
-It keeps each checkout while a task, workspace, execution scope, or pin retains it.
-It never decides that work is disposable because it is old.
+[![Check](https://github.com/OwaisQuadri/workfree/actions/workflows/check.yml/badge.svg)](https://github.com/OwaisQuadri/workfree/actions/workflows/check.yml)
+[License](LICENSE)
 
-The first version targets macOS.
-It has no server, account, background daemon, or scheduled collector.
+## Install in Pi
 
-## Install
-
-Requirements: macOS, a Swift toolchain, and Git.
-From the source checkout:
+Requires macOS, Swift 6 or newer, Git, and Pi.
 
 ```zsh
+pi install git:https://github.com/OwaisQuadri/workfree
+```
+
+https://github.com/user-attachments/assets/edf2081a-5f2d-4141-9c48-203ec3cbdca5
+
+The silent command-line demo shows Finish retaining a workspace owner, then the last release removing the checkout. Output is filtered with `jq`.
+
+Start a new Pi session and ask it to create a managed worktree. Use `/wf` to inspect tasks and `/wf-finish <allocation>` when a task is done.
+
+The package builds its own private executable on first use. No separate `wf` installation is needed. The same installed revision reuses its verified runtime. New source gets a matching runtime after you update and reload.
+
+Workfree appears in Pi's normal package update notice. Update it with your other extensions:
+
+```zsh
+pi update --extensions
+```
+
+Start a new session after the update completes. Keep the package source unpinned if you want these notices.
+
+See [Pi setup and migration](docs/pi.md) for details and the optional Pi-linked shell entry point.
+
+## Optional shell and Herdr setup
+
+Pi users can use the package-owned shell entry point so their shell and Herdr flows follow the same package updates. See [Pi setup](docs/pi.md).
+
+For a standalone shell installation without Pi:
+
+```zsh
+git clone https://github.com/OwaisQuadri/workfree.git
+cd workfree
 ./scripts/install.zsh
-export PATH="$HOME/.local/bin:$PATH"
 ```
 
-The installer builds `wf` and installs the optional adapter files.
-It refuses existing installation targets and does not activate Pi or Herdr.
-Use `--prefix DIRECTORY` for another installation location.
+The standalone installer builds `wf` and installs the optional Herdr adapters. It refuses existing installation targets. Add `~/.local/bin` to your shell's `PATH` if needed. Activation is separate. See [Herdr setup](docs/herdr.md).
 
-For lower initial checkout storage, install the optional provider:
+From a repository, create a new task with cleanup enabled:
 
 ```zsh
-brew install abendrothj/tap/simgit
+wf start feature/example --repo "$PWD" --allow-cleanup
 ```
 
-Workfree prefers installed `simgit`; otherwise it uses native Git.
-A selected-provider failure remains an error.
-Use `--provider git` to select native Git explicitly.
-Use `--require-cow` to refuse an ordinary checkout.
+Use the returned allocation identifier with `wf inspect`, `wf keep`, or `wf finish`. Omitting `--allow-cleanup` keeps automatic cleanup disabled.
 
-## Start and finish
+## How ownership works
 
-From the source repository:
+A task, workspace, execution scope, or pin can retain one allocation. These owners release independently:
 
-```zsh
-wf --json start feature/example --repo . --allow-cleanup
-```
+- Finish the task while leaving its workspace open.
+- Close a workspace without finishing its task.
+- Keep an allocation pinned for later work.
+- Remove the checkout only after the final owner releases it, cleanup is authorized, and safety checks pass.
 
-Keep the returned allocation identifier.
-Workfree defaults to no automatic cleanup permission when you omit `--allow-cleanup`.
+Workfree works with ordinary Git. When available, the optional [simgit](https://github.com/abendrothj/simgit) provider shares initial file storage through copy-on-write. Use `--require-cow` when that is required. The selected provider is recorded per allocation and failures never silently switch providers.
 
-```zsh
-wf inspect <allocation-id>
-wf keep <allocation-id>
-wf unkeep <allocation-id>
-wf finish <allocation-id>
-```
+Keep ordinary commits, fetches, pushes, and rebases in Git. Workfree manages checkout ownership, not Git history.
 
-Finish releases the task owner, not workspace or execution owners.
-After the final owner releases an authorized allocation, Workfree checks its files, identity, and retained commits before removal.
-It keeps branches by default.
-It never discards dirty files or makes an automatic commit.
+## Safety boundaries
 
-## Background work
+Cleanup is disabled unless you permit it for a new allocation. Modified, staged, untracked, ignored, or uncertain checkout data blocks removal. Existing worktrees are not automatically adopted.
 
-An entry command can exit while a child still uses its checkout.
-Workfree therefore does not treat command exit as scope completion.
+Ownership is cooperative. Command exit does not prove that detached children have stopped. Execution owners remain until their scope is explicitly closed. Workfree does not detect or contain arbitrary processes using a checkout.
 
-```zsh
-wf run <allocation-id> --owner build -- <command>
-wf close-scope <allocation-id> --owner build
-```
+There is no cleanup timer or daemon. Interrupted removal can be reconciled without granting new cleanup permission. Read the [safety contract](docs/safety.md) before integrating another host.
 
-The second command is an explicit cooperative promise that this scope has no remaining checkout use.
-Run records the entry status and retains ownership until that promise.
-Only close a scope after its background work ends.
-Unknown execution state retains the checkout.
+## Contribute or get help
 
-A child must acquire its own owner before its parent releases ownership:
+See [CONTRIBUTING.md](CONTRIBUTING.md) for build and check commands. Report bugs and ask questions in [Issues](https://github.com/OwaisQuadri/workfree/issues).
 
-```zsh
-wf retain <allocation-id> --owner child-review --kind execution
-wf close-scope <allocation-id> --owner child-review
-```
-
-This is a cooperative lifecycle tool, not a process sandbox.
-It cannot protect against an unrelated application that bypasses ownership.
-
-## Herdr
-
-The optional scripts in `integrations/herdr` provide these actions:
-
-- Open creates a task and retains workspace ownership before opening Herdr.
-- Close for now releases only workspace ownership.
-- Finish and close releases the task and workspace ownership separately.
-- Keep pins the checkout without closing its workspace.
-
-A workspace-close event hook handles closure outside the helper script.
-Ambiguous open failures and missed events retain ownership for inspection.
-Existing unmanaged workspaces can close, but these adapters never remove their checkouts.
-See [Herdr integration](docs/herdr.md) for setup and recovery.
-
-## Pi
-
-The optional Pi package exposes a `wf` tool and explicit inspection and Finish commands.
-It does not infer task completion from agent settlement, a merged pull request, session shutdown, or a topic change.
-
-One conversation can manage several task allocations.
-Read-only children can retain the same allocation.
-Independent writers need separate allocations.
-A parent must retain a writer's allocation until it accepts and preserves the result.
-
-See [Pi integration](docs/pi.md) for setup and task handoffs.
-
-## Safety and recovery
-
-Workfree refuses removal when permission, ownership, file state, commit preservation, or allocation identity is uncertain.
-Ignored files also block cleanup.
-No existing checkout becomes managed merely because you install Workfree.
-
-```zsh
-wf list
-wf inspect <allocation-id>
-wf recover <allocation-id>
-```
-
-Recovery does not expire owners or infer that a dead entry process means all its work ended.
-See [the safety contract](docs/safety.md) for the precise boundary.
-
-## Contribute
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the source checks and adapter tests.
-The Swift library target is `Workscope`; the public command is `wf`.
+Workfree is available under the [MIT license](LICENSE).

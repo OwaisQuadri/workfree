@@ -1,5 +1,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@earendil-works/pi-ai";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createExecutableResolver } from "./runtime.ts";
 
 const actions = ["start", "inspect", "list", "retain", "release", "finish", "keep", "unkeep", "close-scope", "entry-exit", "recover"] as const;
 
@@ -41,7 +45,13 @@ export function argumentsFor(input: {
   return ["--json", ...args];
 }
 
-export default function wf(pi: ExtensionAPI) {
+export default async function wf(pi: ExtensionAPI) {
+  const executable = await createExecutableResolver(
+    pi.exec.bind(pi),
+    fileURLToPath(new URL("../../", import.meta.url)),
+    join(homedir(), "Library", "Application Support", "workfree", "runtime"),
+    process.env.WF_BIN,
+  );
   pi.registerTool({
     name: "wf",
     label: "Workfree",
@@ -67,8 +77,8 @@ export default function wf(pi: ExtensionAPI) {
         }
       }
       const args = argumentsFor(input, ctx.cwd);
-      const result = await pi.exec(process.env.WF_BIN ?? "wf", args, { signal });
-      if (result.code !== 0) throw new Error(result.stderr || result.stdout || `wf exited ${result.code}`);
+      const result = await pi.exec(await executable(signal), args, { signal });
+      if (result.code !== 0 || result.killed) throw new Error(result.stderr || result.stdout || `wf failed with exit code ${result.code}`);
       let details: unknown;
       try { details = JSON.parse(result.stdout); }
       catch { throw new Error("wf returned invalid JSON"); }
@@ -79,8 +89,9 @@ export default function wf(pi: ExtensionAPI) {
   pi.registerCommand("wf", {
     description: "Inspect managed tasks and cleanup blockers",
     handler: async (id, ctx) => {
-      const result = await pi.exec(process.env.WF_BIN ?? "wf", id.trim() ? ["inspect", id.trim()] : ["list"]);
-      ctx.ui.notify(result.code === 0 ? result.stdout : result.stderr, result.code === 0 ? "info" : "error");
+      const result = await pi.exec(await executable(), id.trim() ? ["inspect", id.trim()] : ["list"]);
+      const isSuccess = result.code === 0 && !result.killed;
+      ctx.ui.notify(isSuccess ? result.stdout : result.stderr, isSuccess ? "info" : "error");
     },
   });
 
@@ -89,8 +100,9 @@ export default function wf(pi: ExtensionAPI) {
     handler: async (id, ctx) => {
       if (!id.trim()) throw new Error("Specify the allocation id");
       if (!ctx.hasUI || !(await ctx.ui.confirm("Finish task?", "Workspace, pin, and execution owners remain. A clean authorized checkout can be removed after its final release."))) return;
-      const result = await pi.exec(process.env.WF_BIN ?? "wf", ["finish", id.trim()]);
-      ctx.ui.notify(result.code === 0 ? result.stdout : result.stderr, result.code === 0 ? "info" : "error");
+      const result = await pi.exec(await executable(), ["finish", id.trim()]);
+      const isSuccess = result.code === 0 && !result.killed;
+      ctx.ui.notify(isSuccess ? result.stdout : result.stderr, isSuccess ? "info" : "error");
     },
   });
 }

@@ -39,7 +39,10 @@ if [[ "$1" = build ]]; then
 fi
 exec /usr/bin/swift "$@"
 `, { mode: 0o755 });
-  const env = { ...process.env, PATH: `${tools}:${process.env.PATH}`, WF_TEST_BUILD_DIR: join(repository, ".build/release"), WF_TEST_GATE: isGated ? "1" : "0", WF_TEST_ROOT: root };
+  const build = join(root, "build");
+  await mkdir(build);
+  await writeFile(join(build, "wf"), "#!/bin/zsh\nprint fixture-workfree\n", { mode: 0o755 });
+  const env = { ...process.env, PATH: `${tools}:${process.env.PATH}`, WF_TEST_BUILD_DIR: build, WF_TEST_GATE: isGated ? "1" : "0", WF_TEST_ROOT: root };
   return { root, source, caller, env };
 }
 
@@ -50,7 +53,8 @@ test("relative prefixes stay anchored to the caller and preserve unrelated sourc
   await writeFile(wrongTarget, sentinel, { mode: 0o755 });
   await exec("/bin/zsh", [join(f.source, "scripts/install.zsh"), "--prefix", "relative-target"], { cwd: f.caller, env: f.env });
   assert.equal(await readFile(wrongTarget, "utf8"), sentinel);
-  assert.deepEqual(await readFile(join(f.caller, "relative-target/bin/wf")), await readFile(join(repository, ".build/release/wf")));
+  await assert.rejects(access(join(f.caller, "relative-target/share/workfree/pi")));
+  assert.deepEqual(await readFile(join(f.caller, "relative-target/bin/wf")), await readFile(join(f.env.WF_TEST_BUILD_DIR, "wf")));
 });
 
 for (const target of ["command", "resources"]) {

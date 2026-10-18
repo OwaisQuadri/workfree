@@ -14,19 +14,28 @@ if (process.env.PI_PACKAGE_ROOT) {
 }
 const { default: extension, argumentsFor } = await import("./wf.ts");
 
-function fixture(isApproved = false) {
+async function fixture(isApproved = false) {
   let tool: any;
   const calls: string[][] = [];
+  const executables: string[] = [];
+  const result = { code: 0, killed: false, stdout: '{"id":"allocation"}', stderr: "" };
   const commands = new Map<string, any>();
   const handlers = new Map<string, any>();
   const ctx = { cwd: "/repo", hasUI: true, ui: { confirm: async () => isApproved, notify: () => undefined } };
-  extension({
-    registerTool(definition: any) { tool = definition; },
-    registerCommand(name: string, definition: any) { commands.set(name, definition); },
-    on(name: string, handler: any) { handlers.set(name, handler); },
-    async exec(_command: string, args: string[]) { calls.push(args); return { code: 0, stdout: '{"id":"allocation"}', stderr: "" }; },
-  } as any);
-  return { calls, commands, handlers, ctx, run: (input: any) => tool.execute("call", input, undefined, undefined, ctx) };
+  const original = process.env.WF_BIN;
+  process.env.WF_BIN = "/fixture/wf";
+  try {
+    await extension({
+      registerTool(definition: any) { tool = definition; },
+      registerCommand(name: string, definition: any) { commands.set(name, definition); },
+      on(name: string, handler: any) { handlers.set(name, handler); },
+      async exec(command: string, args: string[]) { executables.push(command); calls.push(args); return result; },
+    } as any);
+  } finally {
+    if (original === undefined) delete process.env.WF_BIN;
+    else process.env.WF_BIN = original;
+  }
+  return { calls, executables, result, commands, handlers, ctx, run: (input: any) => tool.execute("call", input, undefined, undefined, ctx) };
 }
 
 test("start defaults to no cleanup permission and passes arguments without shell interpolation", () => {
@@ -35,10 +44,10 @@ test("start defaults to no cleanup permission and passes arguments without shell
 });
 
 test("automatic cleanup permission requires affirmative operator confirmation", async () => {
-  const denied = fixture();
+  const denied = await fixture();
   await assert.rejects(denied.run({ action: "start", branch: "feature/a", isCleanupAllowed: true }), /not authorized/);
   assert.deepEqual(denied.calls, []);
-  const approved = fixture(true);
+  const approved = await fixture(true);
   await approved.run({ action: "start", branch: "feature/a", isCleanupAllowed: true });
   assert.ok(approved.calls[0].includes("--allow-cleanup"));
   approved.ctx.hasUI = false;
@@ -47,12 +56,22 @@ test("automatic cleanup permission requires affirmative operator confirmation", 
 });
 
 test("finish, workspace release, and execution closure remain separate operations", async () => {
-  const f = fixture();
+  const f = await fixture();
   await f.run({ action: "finish", id: "allocation" });
   await f.run({ action: "release", id: "allocation", owner: "workspace" });
   await f.run({ action: "close-scope", id: "allocation", owner: "execution" });
   assert.deepEqual(f.calls, [["--json", "finish", "allocation"], ["--json", "release", "allocation", "--owner", "workspace"], ["--json", "close-scope", "allocation", "--owner", "execution"]]);
   assert.equal(f.handlers.size, 0);
+});
+
+test("tools and commands share the captured override and reject killed CLI results", async () => {
+  const f = await fixture(true);
+  await f.run({ action: "list" });
+  await f.commands.get("wf").handler("", f.ctx);
+  await f.commands.get("wf-finish").handler("allocation", f.ctx);
+  assert.deepEqual(f.executables, ["/fixture/wf", "/fixture/wf", "/fixture/wf"]);
+  f.result.killed = true;
+  await assert.rejects(f.run({ action: "list" }));
 });
 
 test("malformed task and owner operations fail before invoking the executable", () => {
@@ -64,10 +83,10 @@ test("malformed task and owner operations fail before invoking the executable", 
 });
 
 test("the Finish command cannot infer operator intent or override other owners", async () => {
-  const denied = fixture();
+  const denied = await fixture();
   await denied.commands.get("wf-finish").handler("allocation", denied.ctx);
   assert.equal(denied.calls.length, 0);
-  const approved = fixture(true);
+  const approved = await fixture(true);
   await approved.commands.get("wf-finish").handler("allocation", approved.ctx);
   assert.deepEqual(approved.calls, [["finish", "allocation"]]);
 });

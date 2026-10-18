@@ -63,8 +63,10 @@ struct Arguments {
         case "--state-dir", "--repo", "--base", "--path", "--owner", "--kind", "--label",
           "--status", "--provider":
           index += 1
-          guard index < arguments.count, !arguments[index].isEmpty,
-            !arguments[index].hasPrefix("--"), !arguments[index].utf8.contains(0)
+          guard index < arguments.count,
+            argument == "--label"
+              || (!arguments[index].isEmpty && !arguments[index].hasPrefix("--")),
+            !arguments[index].utf8.contains(0)
           else { throw WorkscopeError("Missing value: \(argument)") }
           options[argument] = arguments[index]
         default: throw WorkscopeError("Unknown option: \(argument)")

@@ -1,27 +1,80 @@
 # Pi integration
 
-The optional package exposes a `wf` tool, `/wf`, and `/wf-finish`.
-It delegates ownership and cleanup decisions to the same executable as the shell and Herdr adapters.
-It has no separate ownership counter.
+The package exposes a `wf` tool, `/wf`, and `/wf-finish`.
+The Swift executable owns allocation and cleanup decisions. The adapter has no separate ownership counter.
 
-## Activate
+## Install
 
-Install Workfree first, then explicitly load the adapter:
+Use macOS 13 or newer with Git and Swift 6 or newer available to Pi. Install Xcode or its Command Line Tools before using Workfree.
 
 ```zsh
-pi install "$HOME/.local/share/workfree/pi"
+pi install git:https://github.com/OwaisQuadri/workfree
 ```
 
-Start a new Pi session to load it.
-For a one-session trial from the source checkout:
+Start a new Pi session or reload extensions. No global `wf` or shell installation is required.
+The root Git package owns the Pi integration. Shell and Herdr installation are optional and do not activate Pi.
+
+On the first tool or command use, Workfree reuses the validated executable for the Git revision captured when the extension loaded, or compiles that revision if none is bound.
+Compilation uses a private temporary source snapshot and scratch directory, not Pi's managed checkout.
+The completed executable lives at `~/Library/Application Support/workfree/runtime/<sha256>/wf` with private, read-only executable permissions.
+First use can take time and fails if the required tools are unavailable. A later use retries a failed build without choosing a global or older executable.
+Concurrent uses in one loaded extension share the build. Cancelling a tool stops that caller waiting but does not cancel compilation or publication.
+A private, immutable revision binding records the product digest for the current platform and architecture. Later extension loads and shell invocations validate that binding and executable without rebuilding.
+Concurrent first builds use independent workspaces. The first binding published wins, even if the builds produce different bytes. Both valid products can remain, but later loads reuse the winner.
+Corrupt bindings, unsafe permissions, and missing or changed products fail without repair or fallback.
+
+For a one-session trial from a committed source checkout:
 
 ```zsh
 pi --extension ./integrations/pi/wf.ts
 ```
 
-The adapter resolves `wf` through the process environment.
-`WF_BIN` can select an explicit executable path.
-The package does not install or replace that executable automatically.
+Uncommitted Swift edits are not build inputs. Reload after committing changes to capture the new revision.
+`WF_BIN` is an explicit operator override captured at extension load. It bypasses Git preparation and compilation and runs the supplied path or command unchanged.
+The default path never searches for `wf` on `PATH`.
+
+## Update
+
+Pi's native **Package Updates Available** notification covers this unpinned Git package.
+
+```zsh
+pi update --extensions
+```
+
+Complete the update, then reload extensions or start a new session.
+The next first use selects the updated revision's product, building it if needed. Already loaded instances remain bound to their captured revision and resolved executable until reload.
+Published executables and revision bindings survive Pi's checkout cleaning. Reloading the same revision does not build another product. Old immutable artifacts are not automatically removed.
+Do not append `@main` or another ref to the install command. Pi treats explicit refs as pinned and excludes them from update notifications.
+Bare `pi update` updates Pi itself, not extension packages.
+
+## Link an optional shell entry
+
+The package includes `integrations/pi/wf.zsh` for a shell or Herdr entry that follows Pi's managed Git checkout instead of a fixed standalone binary.
+It requires Node.js 22.19 or newer on `PATH`, in addition to the macOS, Git, and Swift prerequisites above. It needs neither a global `wf` nor installed Pi peer packages at runtime.
+
+Use `pi list` to find the managed Workfree checkout. Create a personal symlink to that checkout's `integrations/pi/wf.zsh` at your chosen shell entry point.
+If that entry already exists, inspect it before replacing it. No link or global installation is created by the package.
+Configure Herdr to invoke that same linked entry rather than an older standalone executable.
+
+The entry resolves the package from its own location, including through a symlink. It shares the Pi extension's revision bindings and immutable products.
+Each invocation captures the managed checkout's current revision. Complete `pi update --extensions` before invoking it to use the updated source.
+The launcher passes arguments and standard streams unchanged and preserves the native process's exit status or terminating signal.
+It ignores `WF_BIN`, so a shell entry pointing back to this launcher cannot recurse through the override. It does not update packages or change Pi settings.
+
+For users without Pi, the ordinary Swift build and `scripts/install.zsh` standalone installer remain available. That installer copies a fixed executable and does not make it follow Pi updates.
+
+## Migrate the old local package
+
+If you previously activated the shell installer's flat Pi package, remove that declaration with Pi's normal package management:
+
+```zsh
+pi remove "$HOME/.local/share/workfree/pi"
+pi install git:https://github.com/OwaisQuadri/workfree
+```
+
+Use `pi list` to find a different old path. If it was installed with `--local`, remove it with `pi remove --local <old-path>` in that project.
+Reload extensions or start a new session after migration. Do not keep both local and Git declarations.
+The installer no longer copies a Pi package. Existing shell commands and Herdr resources can stay installed.
 
 ## Task boundaries
 

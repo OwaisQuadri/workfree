@@ -26,15 +26,18 @@ if [[ -z "$mode" ]]; then
 fi
 case "$mode" in --close|--finish|--keep) ;; *) print -u2 'Unknown action.'; exit 2 ;; esac
 snapshot=$("$herdr_bin" workspace get "$workspace")
-id=$(print -rn -- "$snapshot" | jq -r '.result.workspace.tokens.wf_id // empty')
-owner=$(print -rn -- "$snapshot" | jq -r '.result.workspace.tokens.wf_owner // empty')
+id=$(print -rn -- "$snapshot" | jq -er '.result.workspace.tokens.wf_id // "" | strings | select(index("\u0000") == null) | . + "."')
+id=${id%.}
+owner=$(print -rn -- "$snapshot" | jq -er '.result.workspace.tokens.wf_owner // "" | strings | select(index("\u0000") == null) | . + "."')
+owner=${owner%.}
 if [[ -z "$id" || -z "$owner" ]]; then
   [[ "$mode" = --close ]] || { print -u2 'This workspace is unmanaged. Use --close; no checkout will be removed.'; exit 1; }
   "$herdr_bin" workspace close "$workspace"
   exit 0
 fi
 allocation=$("$wf_bin" --json inspect "$id")
-repo=$(print -rn -- "$allocation" | jq -er '.repository')
+repo=$(print -rn -- "$allocation" | jq -er '.repository | strings | select(index("\u0000") == null) | . + "."')
+repo=${repo%.}
 cd "$repo"
 case "$mode" in
   --keep) "$wf_bin" --json keep "$id"; exit 0 ;;
