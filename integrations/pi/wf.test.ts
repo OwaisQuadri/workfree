@@ -20,12 +20,19 @@ function fixture(isApproved = false) {
   const commands = new Map<string, any>();
   const handlers = new Map<string, any>();
   const ctx = { cwd: "/repo", hasUI: true, ui: { confirm: async () => isApproved, notify: () => undefined } };
-  extension({
-    registerTool(definition: any) { tool = definition; },
-    registerCommand(name: string, definition: any) { commands.set(name, definition); },
-    on(name: string, handler: any) { handlers.set(name, handler); },
-    async exec(_command: string, args: string[]) { calls.push(args); return { code: 0, stdout: '{"id":"allocation"}', stderr: "" }; },
-  } as any);
+  const original = process.env.WF_BIN;
+  process.env.WF_BIN = "/fixture/wf";
+  try {
+    extension({
+      registerTool(definition: any) { tool = definition; },
+      registerCommand(name: string, definition: any) { commands.set(name, definition); },
+      on(name: string, handler: any) { handlers.set(name, handler); },
+      async exec(_command: string, args: string[]) { calls.push(args); return { code: 0, stdout: '{"id":"allocation"}', stderr: "" }; },
+    } as any);
+  } finally {
+    if (original === undefined) delete process.env.WF_BIN;
+    else process.env.WF_BIN = original;
+  }
   return { calls, commands, handlers, ctx, run: (input: any) => tool.execute("call", input, undefined, undefined, ctx) };
 }
 
