@@ -24,15 +24,13 @@ build_dir=$(swift build -c release --show-bin-path)
 install -d "$prefix/bin" "$prefix/share"
 staging=$(mktemp -d "$prefix/.workfree-install.XXXXXX")
 trap 'rm -rf -- "$staging"' EXIT
-install -d "$staging/bin" "$staging/share/workfree/herdr" "$staging/share/workfree/pi"
+install -d "$staging/bin" "$staging/share/workfree/herdr"
 for name in open close event; do
   install -m 755 "integrations/herdr/wf-herdr-$name.zsh" "$staging/share/workfree/herdr/wf-herdr-$name.zsh"
 done
 install -m 755 integrations/herdr/wf-herdr-open.zsh "$staging/bin/wf-herdr-open"
 install -m 755 integrations/herdr/wf-herdr-close.zsh "$staging/bin/wf-herdr-close"
 install -m 644 integrations/herdr/herdr-plugin.toml "$staging/share/workfree/herdr/herdr-plugin.toml"
-install -m 644 integrations/pi/wf.ts "$staging/share/workfree/pi/wf.ts"
-install -m 644 integrations/pi/package.json "$staging/share/workfree/pi/package.json"
 install -m 755 "$build_dir/wf" "$staging/bin/wf"
 swift -warnings-as-errors "$root/scripts/publish-install.swift" "$staging" "$prefix"
 "$prefix/bin/wf" --version

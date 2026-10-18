@@ -18,7 +18,7 @@
     "typescript": "^6.0.3"
   },
   "scripts": {
-    "test": "node --test integrations/pi/wf.test.ts integrations/herdr/wf-herdr.test.ts scripts/install.test.ts",
+    "test": "node --test integrations/pi/runtime.test.ts integrations/pi/launcher.test.ts integrations/pi/wf.test.ts integrations/herdr/wf-herdr.test.ts scripts/install.test.ts",
     "typecheck": "tsc -p tsconfig.json"
   }
 }

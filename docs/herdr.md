@@ -5,9 +5,25 @@ It does not replace Git or use Herdr's force-removal route.
 It requires `jq` and a Herdr version compatible with the included plugin manifest.
 The interactive close menu also uses `fzf` when available; explicit actions do not require it.
 
-## Activate
+## Activate with Pi
 
-First install Workfree and the adapter files through `scripts/install.zsh`.
+First follow [Pi installation and the optional shell entry](pi.md).
+Link the shell command `wf` to that package-owned entry so Herdr uses the same updated runtime.
+Use `pi list` to find the managed checkout, then set `package_root` to that directory:
+
+```zsh
+herdr plugin link "$package_root/integrations/herdr" --enabled
+```
+
+The adapter scripts are already in that checkout.
+Use their full paths or create personal links for `wf-herdr-open` and `wf-herdr-close`.
+Inspect existing entries before replacing them.
+This route does not require the standalone installer.
+Reload Herdr's plugin configuration after package updates that change its manifest.
+
+## Activate without Pi
+
+Install Workfree and the adapter files through `scripts/install.zsh`.
 Activation is separate from installation:
 
 ```zsh
