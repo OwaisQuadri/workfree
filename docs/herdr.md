@@ -37,7 +37,18 @@ wf-herdr-open feature/example --repo "$PWD" --allow-cleanup
 ```
 
 Omit `--allow-cleanup` when the checkout must remain after its owners release it.
-This is a new-allocation path, not automatic adoption of existing worktrees.
+This creates a new allocation; it does not adopt existing worktrees.
+
+Reopen a registered allocation after Close for now with its existing ID:
+
+```zsh
+wf-herdr-open --allocation ID
+```
+
+This mode inspects and retains the allocation without starting another task or changing cleanup permission.
+It rejects creation options and labels the workspace with the checkout's current branch, or `detached:REV` for a detached HEAD.
+Route managed closed-checkout picker choices through this mode, not plain `herdr worktree open`.
+Leave unmanaged choices and focusing already-open workspaces unchanged.
 
 You can assign these commands to your existing Herdr shortcuts:
 
@@ -78,10 +89,20 @@ Any other owner or file-state blocker keeps it.
 
 ## Failures
 
-The helper registers workspace ownership before opening Herdr.
-It records the allocation and owner identifiers in workspace metadata after opening succeeds.
-An ambiguous open or failed metadata write retains owners rather than guessing that no window exists.
+Before every open, the helper retains a fresh provisional workspace owner.
+After opening, it reads workspace metadata and reuses an existing owner for this allocation, including older `herdr-opening:ID` owners.
+Otherwise it retains an owner combining the returned workspace ID with a fresh lifetime UUID.
+Workspace IDs can repeat across servers or restarts; the UUID keeps those owners distinct.
+It records the exact allocation and owner in metadata, then releases only this call's provisional owner.
+Sequential opens of an already-open workspace reuse that mapping without accumulating owners.
+
+Conflicting allocation metadata is rejected without overwriting it.
+Concurrent first opens can both observe missing metadata and leave an extra owner because metadata writes are not compare-and-set.
+Inspect ambiguous concurrent opens before releasing any unknown owner.
+
+An ambiguous open, failed retain, or failed metadata operation preserves existing owners rather than guessing that no window exists.
 Inspect the allocation and actual workspace before releasing such an owner.
+The helper never finishes a task on failure or infers cleanup from a shell exiting.
 
 A close event without managed metadata releases nothing.
 An unmanaged workspace can close, but these helpers do not delete its checkout.
