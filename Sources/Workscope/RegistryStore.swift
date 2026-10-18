@@ -1,0 +1,167 @@
+import CSQLite
+import Darwin
+import Foundation
+
+final class RegistryStore {
+  private var database: OpaquePointer?
+
+  init(directory: String, isNewLock: Bool) throws {
+    let path = directory + "/registry.sqlite"
+    let isNew = try !isPresent(path)
+    try require(!isNew || isNewLock, "Registry is missing; refusing to recreate it")
+    let descriptor = try privateFile(path, isCreating: isNew)
+    close(descriptor)
+    do {
+      try require(
+        sqlite3_open_v2(path, &database, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil)
+          == SQLITE_OK, "Cannot open registry")
+      try execute("PRAGMA synchronous=FULL")
+      try execute("PRAGMA fullfsync=ON")
+      try execute("PRAGMA journal_mode=DELETE")
+      if isNew {
+        try transaction {
+          try execute("PRAGMA application_id=1465074512")
+          try execute("PRAGMA user_version=1")
+          try execute(
+            "CREATE TABLE allocations (id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE, data TEXT NOT NULL)"
+          )
+          try execute(
+            "CREATE TABLE owner_tokens (token TEXT PRIMARY KEY, allocation_id TEXT NOT NULL)")
+        }
+        try syncDirectory(directory)
+      }
+      try require(try strings("PRAGMA application_id") == ["1465074512"], "Unknown registry")
+      try require(try strings("PRAGMA user_version") == ["1"], "Unsupported registry version")
+      try require(try strings("PRAGMA integrity_check") == ["ok"], "Corrupt registry")
+      _ = try strings("SELECT token FROM owner_tokens LIMIT 1")
+      _ = try strings("SELECT data FROM allocations LIMIT 1")
+    } catch {
+      sqlite3_close(database)
+      database = nil
+      throw error
+    }
+  }
+
+  deinit { sqlite3_close(database) }
+
+  func allocations() throws -> [Allocation] {
+    try strings("SELECT data FROM allocations ORDER BY id").map {
+      try JSONDecoder().decode(Allocation.self, from: Data($0.utf8))
+    }
+  }
+
+  func allocation(_ id: String) throws -> Allocation {
+    let rows = try strings("SELECT data FROM allocations WHERE id=?", [id])
+    guard let row = rows.first else { throw WorkscopeError("Unknown allocation: \(id)") }
+    let allocation = try JSONDecoder().decode(Allocation.self, from: Data(row.utf8))
+    try require(allocation.id == id, "Allocation identity mismatch")
+    return allocation
+  }
+
+  func isTokenReserved(_ token: String) throws -> Bool {
+    try !strings("SELECT allocation_id FROM owner_tokens WHERE token=?", [token]).isEmpty
+  }
+
+  func save(_ allocation: Allocation, isNew: Bool = false) throws {
+    let data = String(decoding: try JSONEncoder().encode(allocation), as: UTF8.self)
+    try transaction {
+      for token in Array(allocation.owners.keys) + Array(allocation.retiredOwners.keys) {
+        try execute(
+          "INSERT OR IGNORE INTO owner_tokens (token, allocation_id) VALUES (?, ?)",
+          [token, allocation.id])
+        try require(
+          try strings("SELECT allocation_id FROM owner_tokens WHERE token=?", [token])
+            == [allocation.id], "Owner token belongs to another allocation")
+      }
+      if isNew {
+        try execute(
+          "INSERT INTO allocations (id, path, data) VALUES (?, ?, ?)",
+          [allocation.id, allocation.path, data])
+      } else {
+        try execute(
+          "UPDATE allocations SET data=? WHERE id=? AND path=?",
+          [data, allocation.id, allocation.path])
+        try require(sqlite3_changes(database) == 1, "Allocation identity changed")
+      }
+    }
+  }
+
+  private func transaction(_ operation: () throws -> Void) throws {
+    try execute("BEGIN IMMEDIATE")
+    do {
+      try operation()
+      try execute("COMMIT")
+    } catch {
+      try? execute("ROLLBACK")
+      throw error
+    }
+  }
+
+  private func statement(_ sql: String, _ values: [String]) throws -> OpaquePointer {
+    var statement: OpaquePointer?
+    try require(sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, failure())
+    guard let statement else { throw WorkscopeError("No SQLite statement") }
+    for (index, value) in values.enumerated() {
+      let result = value.withCString {
+        sqlite3_bind_text(
+          statement, Int32(index + 1), $0, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+      }
+      guard result == SQLITE_OK else {
+        sqlite3_finalize(statement)
+        throw WorkscopeError(failure())
+      }
+    }
+    return statement
+  }
+
+  private func execute(_ sql: String, _ values: [String] = []) throws {
+    let statement = try statement(sql, values)
+    defer { sqlite3_finalize(statement) }
+    var result = sqlite3_step(statement)
+    while result == SQLITE_ROW { result = sqlite3_step(statement) }
+    try require(result == SQLITE_DONE, failure())
+  }
+
+  private func strings(_ sql: String, _ values: [String] = []) throws -> [String] {
+    let statement = try statement(sql, values)
+    defer { sqlite3_finalize(statement) }
+    var rows: [String] = []
+    var result = sqlite3_step(statement)
+    while result == SQLITE_ROW {
+      guard let text = sqlite3_column_text(statement, 0) else {
+        throw WorkscopeError("Unexpected NULL in registry")
+      }
+      rows.append(String(cString: text))
+      result = sqlite3_step(statement)
+    }
+    try require(result == SQLITE_DONE, failure())
+    return rows
+  }
+
+  private func failure() -> String {
+    "Registry error: " + String(cString: sqlite3_errmsg(database))
+  }
+}
+
+func withRegistry<T>(_ directory: String, _ operation: (RegistryStore) throws -> T) throws -> T {
+  var ancestor = directory
+  while try !isPresent(ancestor) { ancestor = (ancestor as NSString).deletingLastPathComponent }
+  try require(
+    (try? git(ancestor, ["rev-parse", "--absolute-git-dir"])) == nil,
+    "State directory must be outside repositories")
+  try FileManager.default.createDirectory(
+    atPath: directory, withIntermediateDirectories: true,
+    attributes: [.posixPermissions: 0o700])
+  var info = stat()
+  try require(
+    lstat(directory, &info) == 0 && info.st_uid == getuid()
+      && info.st_mode & S_IFMT == S_IFDIR && info.st_mode & 0o777 == 0o700,
+    "State directory must be private (0700) and owned by this user")
+  let lockPath = directory + "/registry.lock"
+  let isNewLock = try !isPresent(lockPath)
+  let descriptor = try privateFile(lockPath, isCreating: isNewLock)
+  defer { close(descriptor) }
+  try require(flock(descriptor, LOCK_EX) == 0, "Cannot lock registry")
+  defer { _ = flock(descriptor, LOCK_UN) }
+  return try operation(RegistryStore(directory: directory, isNewLock: isNewLock))
+}

@@ -1,0 +1,24 @@
+{
+  "name": "workfree-integrations",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "pi": {
+    "extensions": ["./integrations/pi/wf.ts"]
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-ai": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.19",
+    "typescript": "^6.0.3"
+  },
+  "scripts": {
+    "test": "node --test integrations/pi/wf.test.ts integrations/herdr/wf-herdr.test.ts scripts/install.test.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  }
+}

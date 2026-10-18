@@ -1,0 +1,27 @@
+id = "workfree"
+name = "Workfree"
+version = "0.1.0"
+min_herdr_version = "0.9.1"
+platforms = ["macos"]
+
+[[actions]]
+id = "close"
+title = "Close for now"
+contexts = ["workspace"]
+command = ["/bin/zsh", "wf-herdr-close.zsh", "--close"]
+
+[[actions]]
+id = "finish-close"
+title = "Finish and close"
+contexts = ["workspace"]
+command = ["/bin/zsh", "wf-herdr-close.zsh", "--finish"]
+
+[[actions]]
+id = "keep"
+title = "Keep"
+contexts = ["workspace"]
+command = ["/bin/zsh", "wf-herdr-close.zsh", "--keep"]
+
+[[events]]
+on = "workspace.closed"
+command = ["/bin/zsh", "wf-herdr-event.zsh"]

@@ -1,0 +1,22 @@
+name: Check
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: brew install abendrothj/tap/simgit
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: ./scripts/check.zsh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: workfree-macos
+          path: .build/release/wf
+          include-hidden-files: true
+          if-no-files-found: error
