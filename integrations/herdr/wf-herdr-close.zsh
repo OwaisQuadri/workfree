@@ -9,6 +9,9 @@ fi
 wf_bin=${WF_BIN:-wf}
 herdr_bin=${HERDR_BIN:-${HERDR_BIN_PATH:-herdr}}
 workspace=${HERDR_WORKSPACE_ID:-}
+if [[ -z "${HERDR_PANE_ID:-}" && -n "${HERDR_ACTIVE_WORKSPACE_ID:-}" ]]; then
+  workspace=$HERDR_ACTIVE_WORKSPACE_ID
+fi
 [[ -n "$workspace" ]] || { print -u2 'The current workspace is unavailable.'; exit 1; }
 mode=${1:-}
 if [[ -z "$mode" ]]; then

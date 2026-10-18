@@ -55,6 +55,7 @@ You can assign these commands to your existing Herdr shortcuts:
 - Creation: `wf-herdr-open` with the selected branch and repository.
 - Closing: `wf-herdr-close` for an interactive menu.
 
+Popup commands use Herdr's active workspace context when no pane identity is present. Ordinary pane commands use their own workspace identity.
 The adapter does not change your keybindings or remove existing scripts during installation.
 
 ## Actions
