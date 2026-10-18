@@ -97,6 +97,22 @@ test("Finish precedes close; workspace ownership releases only after successful 
   assert.ok(finish >= 0 && finish < close && close < release);
 });
 
+test("popup closing uses its active workspace instead of absent or inherited pane context", async (t) => {
+  const f = await fixture(t);
+  for (const inherited of ["", "w-stale"]) {
+    await writeFile(f.log, "");
+    await exec("/bin/zsh", [closeScript, "--close"], { env: { ...f.env, HERDR_PANE_ID: "", HERDR_WORKSPACE_ID: inherited, HERDR_ACTIVE_WORKSPACE_ID: "w-popup" } });
+    const calls = await f.calls();
+    assert.equal(calls[0], "herdr workspace get w-popup");
+    assert.ok(calls.includes("herdr workspace close w-popup"));
+    assert.equal(calls.some((call) => call.includes("w-stale")), false);
+  }
+  await writeFile(f.log, "");
+  await exec("/bin/zsh", [closeScript, "--close"], { env: { ...f.env, HERDR_PANE_ID: "w-pane:p1", HERDR_WORKSPACE_ID: "w-pane", HERDR_ACTIVE_WORKSPACE_ID: "w-stale" } });
+  assert.equal((await f.calls())[0], "herdr workspace get w-pane");
+  assert.ok((await f.calls()).includes("herdr workspace close w-pane"));
+});
+
 test("Close for now preserves the task; Keep does not close the workspace", async (t) => {
   const f = await fixture(t);
   await exec("/bin/zsh", [closeScript, "--close"], { env: f.env });
