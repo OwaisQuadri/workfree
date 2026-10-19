@@ -75,6 +75,31 @@ Its close-event hook also handles ordinary workspace closure.
 A duplicate release is harmless.
 If closing the workspace kills the popup before its final command, the server-side close-event hook can release that workspace owner.
 
+## Storage sizes in the sidebar
+
+Refresh storage sizes measures every Herdr workspace that is a Git checkout and reports two tokens:
+
+- `wf_total` on a primary checkout: its full size plus the private bytes of its linked worktrees that are open in Herdr, such as `12.2 GB + 5.7 GB`. With no open linked worktrees, it shows the full size only.
+- `wf_size` on a linked worktree: the bytes it does not share with copy-on-write clones.
+
+Checkouts that no longer exist are skipped. Workfree never edits your Herdr configuration. To show the tokens, add `{ token = "$wf_total" }` and `{ token = "$wf_size" }` to your existing `ui.sidebar.spaces` rows in `config.toml`, then run `herdr server reload-config`. With the default rows, the result is:
+
+```toml
+[ui.sidebar.spaces]
+rows = [["state_icon", "workspace", { token = "$wf_total", dim = true }], ["branch", "git_status", { token = "$wf_size", dim = true }]]
+```
+
+```text
+○ Pillars · 12.2 GB + 5.7 GB
+  main ↓11
+  ├─ · simulator demo video
+  │    5.4 GB
+  └─ · slack bug reports
+       301.8 MB
+```
+
+Sizes are a snapshot. Run the action again after large changes. A run walks every checkout, so it can take seconds.
+
 ## Your review flow
 
 1. Open a managed checkout with the helper.

@@ -37,11 +37,40 @@ func fileUsage(_ path: String) -> Usage? {
   return Usage(fullBytes: full, privateBytes: min(privateSize(path) ?? full, full))
 }
 
-func measure(_ root: String) -> Usage {
+public struct PathUsage: Codable, Sendable {
+  public let path: String
+  public let usage: Usage
+  public let full: String
+  public let copied: String
+}
+
+public func measurePaths(_ paths: [String]) -> [PathUsage] {
+  let present = paths.compactMap { path -> (String, String)? in
+    guard let resolved = try? canonical(path), (try? isPresent(resolved)) == true else {
+      return nil
+    }
+    return (path, resolved)
+  }
+  let roots = present.map(\.1)
+  return present.map { path, resolved in
+    let usage = measure(
+      resolved, excluding: roots.filter { $0 != resolved && isWithin($0, resolved) })
+    return PathUsage(
+      path: path, usage: usage, full: formatBytes(usage.fullBytes),
+      copied: formatBytes(usage.privateBytes))
+  }
+}
+
+func measure(_ root: String, excluding excluded: [String] = []) -> Usage {
   var total = Usage()
   guard let enumerator = FileManager.default.enumerator(atPath: root) else { return total }
   while let relative = enumerator.nextObject() as? String {
-    if let usage = fileUsage(root + "/" + relative) { total = total + usage }
+    let path = root + "/" + relative
+    if excluded.contains(where: { isWithin(path, $0) }) {
+      enumerator.skipDescendants()
+      continue
+    }
+    if let usage = fileUsage(path) { total = total + usage }
   }
   return total
 }

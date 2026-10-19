@@ -22,6 +22,12 @@ title = "Keep"
 contexts = ["workspace"]
 command = ["/bin/zsh", "wf-herdr-close.zsh", "--keep"]
 
+[[actions]]
+id = "refresh-sizes"
+title = "Refresh storage sizes"
+contexts = ["workspace"]
+command = ["/bin/zsh", "wf-herdr-sizes.zsh"]
+
 [[events]]
 on = "workspace.closed"
 command = ["/bin/zsh", "wf-herdr-event.zsh"]
