@@ -409,15 +409,13 @@ private func cleanup(_ allocation: inout Allocation, store: RegistryStore) throw
       try require(status.isEmpty, "Changed, staged, untracked, or ignored files remain")
     }
     try requireClean()
+    let reclaimedBytes = measure(allocation.path).privateBytes
+    try requireClean()
     let head = try git(allocation.path, ["rev-parse", "HEAD"])
     let refs = try git(
       allocation.repository,
       ["for-each-ref", "--contains", head, "--format=%(refname)", "refs/heads", "refs/tags"])
     try require(!refs.isEmpty, "No ordinary branch or tag preserves HEAD")
-    let reclaimedBytes = measure(allocation.path).privateBytes
-    try requireClean()
-    try require(
-      try git(allocation.path, ["rev-parse", "HEAD"]) == head, "HEAD changed during cleanup")
     allocation.phase = .removing
     allocation.isRemovalPending = true
     allocation.reason = nil

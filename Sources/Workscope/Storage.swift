@@ -37,16 +37,11 @@ func fileUsage(_ path: String) -> Usage? {
   return Usage(fullBytes: full, privateBytes: min(privateSize(path) ?? full, full))
 }
 
-func measure(_ root: String, excluding excluded: [String] = []) -> Usage {
+func measure(_ root: String) -> Usage {
   var total = Usage()
   guard let enumerator = FileManager.default.enumerator(atPath: root) else { return total }
   while let relative = enumerator.nextObject() as? String {
-    let path = root + "/" + relative
-    if excluded.contains(where: { isWithin(path, $0) }) {
-      enumerator.skipDescendants()
-      continue
-    }
-    if let usage = fileUsage(path) { total = total + usage }
+    if let usage = fileUsage(root + "/" + relative) { total = total + usage }
   }
   return total
 }
@@ -205,7 +200,7 @@ func storageStatus(
         cowEstimateBytes: allocation.provider == .git
           ? cowEstimate(allocation.path, usage: usage) : nil)
     }
-    let base = measure(repository, excluding: members.map(\.path))
+    let base = measure(repository)
     repositories.append(
       StorageStatus.Repository(
         path: repository, baseBytes: base.fullBytes,
