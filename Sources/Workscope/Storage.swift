@@ -96,7 +96,15 @@ public struct StorageStatus: Codable, Sendable {
     public let worktrees: [Worktree]
   }
 
+  public struct Missing: Codable, Sendable {
+    public let id: String
+    public let path: String
+    public let phase: Phase
+    public let reason: String?
+  }
+
   public let repositories: [Repository]
+  public let missing: [Missing]
   public let live: Usage
   public let sinceSeconds: TimeInterval?
   public let removedCount: Int
@@ -134,13 +142,27 @@ public struct StorageStatus: Codable, Sendable {
         "\(repository.path)  \(formatBytes(repository.baseBytes)) + \(formatBytes(repository.worktreeBytes))"
       )
       for worktree in repository.worktrees {
-        let blocker = worktree.phase == .retained ? "" : "  \(worktree.phase.rawValue)\(worktree.reason.map { ": \($0)" } ?? "")"
+        let size = formatBytes(worktree.usage.privateBytes)
+        let blocker = describe(worktree.phase, worktree.reason)
+        lines.append("  \(worktree.branch ?? "-")  \(worktree.id)  \(size)\(blocker)")
+      }
+    }
+    if !missing.isEmpty {
+      lines.append("")
+      lines.append("Missing checkouts:")
+      for allocation in missing {
         lines.append(
-          "  \(worktree.branch ?? "-")  \(worktree.id)  \(formatBytes(worktree.usage.privateBytes))\(blocker)")
+          "  \(allocation.id)  \(allocation.path)\(describe(allocation.phase, allocation.reason))")
       }
     }
     return lines.joined(separator: "\n")
   }
+}
+
+func describe(_ phase: Phase, _ reason: String?) -> String {
+  guard phase != .retained || reason != nil else { return "" }
+  let firstLine = reason?.split(separator: "\n").first.map { ": \($0)" } ?? ""
+  return "  \(phase.rawValue)\(firstLine)"
 }
 
 func plural(_ count: Int, _ noun: String) -> String {
@@ -160,8 +182,10 @@ func storageStatus(
 ) -> StorageStatus {
   var live = Usage()
   var repositories: [StorageStatus.Repository] = []
-  let present = allocations.filter {
-    isLiveMeasured && $0.phase != .removed && (try? isPresent($0.path)) == true
+  let active = allocations.filter { isLiveMeasured && $0.phase != .removed }
+  let present = active.filter { (try? isPresent($0.path)) == true }
+  let missing = active.filter { (try? isPresent($0.path)) != true }.map {
+    StorageStatus.Missing(id: $0.id, path: $0.path, phase: $0.phase, reason: $0.reason)
   }
   for (repository, members) in Dictionary(grouping: present, by: \.repository).sorted(by: {
     $0.key < $1.key
@@ -172,8 +196,10 @@ func storageStatus(
       return StorageStatus.Worktree(
         id: allocation.id, path: allocation.path,
         branch: try? git(allocation.path, ["symbolic-ref", "--short", "-q", "HEAD"]),
-        provider: allocation.provider, phase: allocation.phase, reason: allocation.reason, usage: usage,
-        cowEstimateBytes: allocation.provider == .git ? cowEstimate(allocation.path, usage: usage) : nil)
+        provider: allocation.provider, phase: allocation.phase, reason: allocation.reason,
+        usage: usage,
+        cowEstimateBytes: allocation.provider == .git
+          ? cowEstimate(allocation.path, usage: usage) : nil)
     }
     let base = measure(repository, excluding: members.map(\.path))
     repositories.append(
@@ -187,6 +213,7 @@ func storageStatus(
     return (allocation.removedAt ?? .distantPast) >= now.addingTimeInterval(-since)
   }
   return StorageStatus(
-    repositories: repositories, live: live, sinceSeconds: since, removedCount: removed.count,
+    repositories: repositories, missing: missing, live: live, sinceSeconds: since,
+    removedCount: removed.count,
     reclaimedBytes: removed.compactMap(\.reclaimedBytes).reduce(0, +))
 }

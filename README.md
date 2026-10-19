@@ -63,15 +63,16 @@ Native checkouts: 1 use 684.6 MB. With simgit, they would use about 120.0 MB (es
 Auto-cleanup, last 30 days: 1 worktree removed · 412.0 MB reclaimed
 
 /path/to/repo  1.2 GB + 2.0 GB
-  feature/a  1a2b3c4d  886.4 MB
-  fix/b  5e6f7a8b  444.8 MB
-  fix/c  9c0d1e2f  684.6 MB  blocked: Changed, staged, untracked, or ignored files remain
+  feature/a  5497abb5-a8e9-4f0d-b860-b7ae83eb7ca5  886.4 MB
+  fix/b  c1922b5d-15bc-4987-a213-e3a3368f38df  444.8 MB
+  fix/c  fa1733c0-6aca-4fde-8b5f-39f9fd3a2026  684.6 MB  blocked: Changed, staged, untracked, or ignored files remain
 ```
 
 - Full size counts every allocated block. Actual use counts only the blocks that a worktree does not share with an APFS clone.
 - Build outputs and other untracked files are always private, so they reduce the saving.
 - Each repository line shows the full size of its base checkout plus the private bytes of its worktrees.
 - Native Git worktrees also show an estimate of their size with simgit.
+- Allocations whose checkout no longer exists appear under "Missing checkouts" with their identifier, so you can run `wf recover`.
 - `--since 24h`, `--since 2w`, or `--since all` changes the cleanup window. The default is 30 days.
 - Any `wf` command that removes a checkout prints the reclaimed size. `/wf-finish` in Pi shows it too.
 - In Pi, `/wf` shows the same report.

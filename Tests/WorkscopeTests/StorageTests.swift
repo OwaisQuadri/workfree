@@ -29,7 +29,8 @@ final class StorageTests: XCTestCase {
     let history = try fixture.registry.status(since: 86_400, isLiveMeasured: false)
     XCTAssertEqual(history.removedCount, 1)
     XCTAssertEqual(history.reclaimedBytes, removed.reclaimedBytes)
-    try fixture.inject(removed, overrides: ["removedAt": Date().timeIntervalSinceReferenceDate - 172_800])
+    try fixture.inject(
+      removed, overrides: ["removedAt": Date().timeIntervalSinceReferenceDate - 172_800])
     XCTAssertEqual(try fixture.registry.status(since: 86_400).removedCount, 0)
     XCTAssertEqual(try fixture.registry.status(since: nil).removedCount, 1)
   }

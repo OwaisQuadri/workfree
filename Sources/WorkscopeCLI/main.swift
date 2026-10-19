@@ -182,7 +182,8 @@ do {
       {
         FileHandle.standardError.write(
           Data(
-            "Reclaimed \(formatBytes(allocation.reclaimedBytes ?? 0)). \(history.cleanupLine)\n".utf8))
+            "Reclaimed \(formatBytes(allocation.reclaimedBytes ?? 0)). \(history.cleanupLine)\n"
+              .utf8))
       }
     }
   }
