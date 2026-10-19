@@ -72,7 +72,7 @@ Auto-cleanup, last 30 days: 1 worktree removed · 412.0 MB reclaimed
 - Build outputs and other untracked files are always private, so they reduce the saving.
 - Each repository line shows the full size of its base checkout plus the private bytes of its worktrees.
 - Native Git worktrees also show an estimate of their size with simgit.
-- Allocations whose checkout no longer exists appear under "Missing checkouts" with their identifier, so you can run `wf recover`.
+- Allocations whose checkout no longer exists appear under "Missing checkouts" with their identifier and phase. `wf recover` completes an interrupted removal.
 - `--since 24h`, `--since 2w`, or `--since all` changes the cleanup window. The default is 30 days.
 - Any `wf` command that removes a checkout prints the reclaimed size. `/wf-finish` in Pi shows it too.
 - In Pi, `/wf` shows the same report.

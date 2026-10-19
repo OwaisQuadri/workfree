@@ -161,8 +161,9 @@ public struct StorageStatus: Codable, Sendable {
 
 func describe(_ phase: Phase, _ reason: String?) -> String {
   guard phase != .retained || reason != nil else { return "" }
-  let firstLine = reason?.split(separator: "\n").first.map { ": \($0)" } ?? ""
-  return "  \(phase.rawValue)\(firstLine)"
+  let detail =
+    reason.map { ": " + $0.split(whereSeparator: \.isNewline).joined(separator: " · ") } ?? ""
+  return "  \(phase.rawValue)\(detail)"
 }
 
 func plural(_ count: Int, _ noun: String) -> String {
@@ -183,8 +184,11 @@ func storageStatus(
   var live = Usage()
   var repositories: [StorageStatus.Repository] = []
   let active = allocations.filter { isLiveMeasured && $0.phase != .removed }
-  let present = active.filter { (try? isPresent($0.path)) == true }
-  let missing = active.filter { (try? isPresent($0.path)) != true }.map {
+  let presence = Dictionary(
+    active.map { ($0.id, (try? isPresent($0.path)) == true) },
+    uniquingKeysWith: { first, _ in first })
+  let present = active.filter { presence[$0.id] == true }
+  let missing = active.filter { presence[$0.id] != true && $0.admin != nil }.map {
     StorageStatus.Missing(id: $0.id, path: $0.path, phase: $0.phase, reason: $0.reason)
   }
   for (repository, members) in Dictionary(grouping: present, by: \.repository).sorted(by: {

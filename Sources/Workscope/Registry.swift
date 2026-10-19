@@ -389,7 +389,6 @@ private func cleanup(_ allocation: inout Allocation, store: RegistryStore) throw
       },
       "Execution scope closure is unproven")
     try verifyIdentity(allocation)
-    let reclaimedBytes = measure(allocation.path).privateBytes
     let index = try git(allocation.path, ["ls-files", "-v", "-z"])
     try require(
       index.split(separator: "\0").allSatisfy { field in
@@ -400,18 +399,23 @@ private func cleanup(_ allocation: inout Allocation, store: RegistryStore) throw
     try require(
       !entries.split(separator: "\0").contains { $0.hasPrefix("160000 ") },
       "Submodule preservation is unproven")
-    let status = try git(
-      allocation.path,
-      [
-        "status", "--porcelain=v1", "--untracked-files=all", "--ignored",
-        "--ignore-submodules=none",
-      ])
-    try require(status.isEmpty, "Changed, staged, untracked, or ignored files remain")
+    func requireClean() throws {
+      let status = try git(
+        allocation.path,
+        [
+          "status", "--porcelain=v1", "--untracked-files=all", "--ignored",
+          "--ignore-submodules=none",
+        ])
+      try require(status.isEmpty, "Changed, staged, untracked, or ignored files remain")
+    }
+    try requireClean()
     let head = try git(allocation.path, ["rev-parse", "HEAD"])
     let refs = try git(
       allocation.repository,
       ["for-each-ref", "--contains", head, "--format=%(refname)", "refs/heads", "refs/tags"])
     try require(!refs.isEmpty, "No ordinary branch or tag preserves HEAD")
+    let reclaimedBytes = measure(allocation.path).privateBytes
+    try requireClean()
     allocation.phase = .removing
     allocation.isRemovalPending = true
     allocation.reason = nil
