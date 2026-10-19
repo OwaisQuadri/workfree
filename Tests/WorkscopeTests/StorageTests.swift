@@ -34,4 +34,16 @@ final class StorageTests: XCTestCase {
     XCTAssertEqual(try fixture.registry.status(since: 86_400).removedCount, 0)
     XCTAssertEqual(try fixture.registry.status(since: nil).removedCount, 1)
   }
+
+  func testMeasurePathsSkipsMissingAndExcludesNestedRoots() throws {
+    let fixture = try Fixture()
+    let nested = fixture.repository + "/.worktrees/nested"
+    _ = try git(fixture.repository, ["worktree", "add", "-q", "--detach", nested])
+    try Data(repeating: 5, count: 3_000_000).write(to: URL(fileURLWithPath: nested + "/payload"))
+    let inputs = [fixture.repository, nested, fixture.repository + "/missing"]
+    let usages = measurePaths(inputs)
+    XCTAssertEqual(usages.map(\.path), Array(inputs.prefix(2)))
+    XCTAssertLessThan(usages[0].usage.fullBytes, 3_000_000)
+    XCTAssertGreaterThanOrEqual(usages[1].usage.fullBytes, 3_000_000)
+  }
 }
