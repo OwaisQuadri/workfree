@@ -5,9 +5,19 @@ Git worktrees with explicit owners. Opt-in cleanup frees a checkout after its la
 [![Check](https://github.com/OwaisQuadri/workfree/actions/workflows/check.yml/badge.svg)](https://github.com/OwaisQuadri/workfree/actions/workflows/check.yml)
 [License](LICENSE)
 
-## Install in Pi
+## Install
 
-Requires macOS, Swift 6 or newer, Git, and Pi.
+Requires macOS, Swift 6 or newer, and Git.
+
+```zsh
+curl -fsSL https://raw.githubusercontent.com/OwaisQuadri/workfree/main/scripts/bootstrap.zsh | zsh
+```
+
+This builds `wf` and the optional Herdr adapters into `~/.local/bin`. Add that directory to your shell's `PATH` if needed. Pass installer options after `zsh -s --`, for example `| zsh -s -- --prefix DIRECTORY`.
+
+## Recommended: use with Pi
+
+Workfree works on its own. With [Pi](https://pi.dev), agents create and release worktrees for you. Install the Pi package instead of, or as well as, the standalone command:
 
 ```zsh
 pi install git:https://github.com/OwaisQuadri/workfree
@@ -35,7 +45,7 @@ See [Pi setup and migration](docs/pi.md) for details and the optional Pi-linked 
 
 Pi users can use the package-owned shell entry point so their shell and Herdr flows follow the same package updates. See [Pi setup](docs/pi.md).
 
-For a standalone shell installation without Pi:
+To install from a source checkout instead of the [curl command](#install):
 
 ```zsh
 git clone https://github.com/OwaisQuadri/workfree.git
@@ -43,7 +53,7 @@ cd workfree
 ./scripts/install.zsh
 ```
 
-The standalone installer builds `wf` and installs the optional Herdr adapters. It refuses existing installation targets. Add `~/.local/bin` to your shell's `PATH` if needed. Activation is separate. See [Herdr setup](docs/herdr.md).
+Both routes run the same installer. It refuses existing installation targets. Activation is separate. See [Herdr setup](docs/herdr.md).
 
 From a repository, create a new task with cleanup enabled:
 
