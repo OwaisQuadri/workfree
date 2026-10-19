@@ -45,4 +45,6 @@ public struct Allocation: Codable, Sendable {
   public internal(set) var reason: String?
   public internal(set) var owners: [String: Owner]
   public internal(set) var retiredOwners: [String: Owner]
+  public internal(set) var removedAt: Date?
+  public internal(set) var reclaimedBytes: Int64?
 }

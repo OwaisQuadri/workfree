@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createExecutableResolver } from "./runtime.ts";
 
-const actions = ["start", "inspect", "list", "retain", "release", "finish", "keep", "unkeep", "close-scope", "entry-exit", "recover"] as const;
+const actions = ["start", "inspect", "list", "status", "retain", "release", "finish", "keep", "unkeep", "close-scope", "entry-exit", "recover"] as const;
 
 export function argumentsFor(input: {
   action: typeof actions[number];
@@ -25,7 +25,7 @@ export function argumentsFor(input: {
     args.push(input.branch, "--repo", input.repo ?? cwd);
     if (input.isCleanupAllowed) args.push("--allow-cleanup");
     if (input.isCopyOnWriteRequired) args.push("--require-cow");
-  } else if (input.action !== "list") {
+  } else if (input.action !== "list" && input.action !== "status") {
     if (!input.id) throw new Error(`${input.action} requires an allocation id`);
     args.push(input.id);
   }
@@ -87,9 +87,9 @@ export default async function wf(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("wf", {
-    description: "Inspect managed tasks and cleanup blockers",
+    description: "Show storage saved and cleanup history, or inspect one task",
     handler: async (id, ctx) => {
-      const result = await pi.exec(await executable(), id.trim() ? ["inspect", id.trim()] : ["list"]);
+      const result = await pi.exec(await executable(), id.trim() ? ["inspect", id.trim()] : ["status"]);
       const isSuccess = result.code === 0 && !result.killed;
       ctx.ui.notify(isSuccess ? result.stdout : result.stderr, isSuccess ? "info" : "error");
     },

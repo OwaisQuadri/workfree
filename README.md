@@ -53,6 +53,28 @@ wf start feature/example --repo "$PWD" --allow-cleanup
 
 Use the returned allocation identifier with `wf inspect`, `wf keep`, or `wf finish`. Omitting `--allow-cleanup` keeps automatic cleanup disabled.
 
+## Storage saved
+
+`wf status` shows what copy-on-write storage and cleanup save you:
+
+```text
+Live worktrees: 4 · full checkouts would use 9.2 GB · actually using 8.6 GB · saved 633.7 MB
+Auto-cleanup, last 30 days: 0 worktrees removed · 0 KB reclaimed
+
+/path/to/repo  100.3 MB + 2.0 GB
+  feature/a  886.4 MB
+```
+
+- Full size counts every allocated block. Actual use counts only the blocks that a worktree does not share with an APFS clone.
+- Build outputs and other untracked files are always private, so they reduce the saving.
+- Each repository line shows its base checkout plus the private bytes of its worktrees.
+- Native Git worktrees also show an estimate of their size with simgit.
+- `--since 24h`, `--since 2w`, or `--since all` changes the cleanup window. The default is 30 days.
+- `wf finish` prints the reclaimed size when it removes a checkout.
+- In Pi, `/wf` shows the same report.
+
+Cleanup history starts with this version. The report walks every live worktree, so it takes seconds for large checkouts.
+
 ## How ownership works
 
 A task, workspace, execution scope, or pin can retain one allocation. These owners release independently:
