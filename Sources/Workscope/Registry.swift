@@ -16,6 +16,10 @@ public struct Registry: Sendable {
     try withRegistry(stateDirectory) { try $0.allocations() }
   }
 
+  public func status(since: TimeInterval?, isLiveMeasured: Bool = true) throws -> StorageStatus {
+    storageStatus(try list(), since: since, isLiveMeasured: isLiveMeasured)
+  }
+
   public func inspect(_ id: String) throws -> Allocation {
     try withRegistry(stateDirectory) { try $0.allocation(id) }
   }
@@ -221,6 +225,7 @@ public struct Registry: Sendable {
           allocation.phase = .removed
           allocation.isRemovalPending = false
           allocation.reason = nil
+          allocation.removedAt = Date()
         } catch {
           allocation.phase = .blocked
           allocation.reason = String(describing: error)
@@ -394,13 +399,18 @@ private func cleanup(_ allocation: inout Allocation, store: RegistryStore) throw
     try require(
       !entries.split(separator: "\0").contains { $0.hasPrefix("160000 ") },
       "Submodule preservation is unproven")
-    let status = try git(
-      allocation.path,
-      [
-        "status", "--porcelain=v1", "--untracked-files=all", "--ignored",
-        "--ignore-submodules=none",
-      ])
-    try require(status.isEmpty, "Changed, staged, untracked, or ignored files remain")
+    func requireClean() throws {
+      let status = try git(
+        allocation.path,
+        [
+          "status", "--porcelain=v1", "--untracked-files=all", "--ignored",
+          "--ignore-submodules=none",
+        ])
+      try require(status.isEmpty, "Changed, staged, untracked, or ignored files remain")
+    }
+    try requireClean()
+    let reclaimedBytes = measure(allocation.path).privateBytes
+    try requireClean()
     let head = try git(allocation.path, ["rev-parse", "HEAD"])
     let refs = try git(
       allocation.repository,
@@ -409,6 +419,7 @@ private func cleanup(_ allocation: inout Allocation, store: RegistryStore) throw
     allocation.phase = .removing
     allocation.isRemovalPending = true
     allocation.reason = nil
+    allocation.reclaimedBytes = reclaimedBytes
     try store.save(allocation)
     switch allocation.provider {
     case .simgit:
@@ -423,6 +434,7 @@ private func cleanup(_ allocation: inout Allocation, store: RegistryStore) throw
       "Removal left a registration")
     allocation.phase = .removed
     allocation.isRemovalPending = false
+    allocation.removedAt = Date()
   } catch {
     allocation.phase = .blocked
     allocation.reason = String(describing: error)

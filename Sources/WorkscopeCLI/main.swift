@@ -11,6 +11,7 @@ let help = """
       [--require-cow] [--provider git|simgit]
     inspect ID
     list
+    status [--since 30d|24h|2w|all]
     retain ID --owner TOKEN --kind task|workspace|execution|pin [--label TEXT]
     release ID --owner TOKEN
     finish ID [--owner TOKEN]
@@ -61,7 +62,7 @@ struct Arguments {
         case "--help": isHelp = true
         case "--version": isVersion = true
         case "--state-dir", "--repo", "--base", "--path", "--owner", "--kind", "--label",
-          "--status", "--provider":
+          "--status", "--provider", "--since":
           index += 1
           guard index < arguments.count,
             argument == "--label"
@@ -87,12 +88,13 @@ struct Arguments {
     case "entry-exit": allowed = ["--owner", "--status"]
     case "run": allowed = ["--owner", "--"]
     case "inspect", "list", "keep", "unkeep", "recover": allowed = []
+    case "status": allowed = ["--since"]
     default: throw WorkscopeError("Unknown command: \(action)")
     }
     guard flags.subtracting(allowed.union(["--json", "--state-dir"])).isEmpty else {
       throw WorkscopeError("Option not valid for \(action)")
     }
-    guard positional.count == (action == "list" ? 1 : 2) else {
+    guard positional.count == (["list", "status"].contains(action) ? 1 : 2) else {
       throw WorkscopeError("Wrong number of arguments for \(action)")
     }
     if action == "run", !flags.contains("--") || command.isEmpty {
@@ -124,8 +126,16 @@ do {
     let action = arguments.positional[0]
     if action == "list" {
       try output(registry.list(), isJSON: arguments.isJSON)
+    } else if action == "status" {
+      let status = try registry.status(since: parseInterval(arguments.options["--since"] ?? "30d"))
+      if arguments.isJSON {
+        try output(status, isJSON: true)
+      } else {
+        print(status.text)
+      }
     } else {
       let id = arguments.positional[1]
+      let isRemovedBefore = (try? registry.inspect(id))?.phase == .removed
       let allocation: Allocation
       switch action {
       case "start":
@@ -167,6 +177,14 @@ do {
       default: throw WorkscopeError("Unknown command")
       }
       try output(allocation, isJSON: arguments.isJSON)
+      if !arguments.isJSON, !isRemovedBefore, allocation.phase == .removed,
+        let history = try? registry.status(since: 30 * 86_400, isLiveMeasured: false)
+      {
+        FileHandle.standardError.write(
+          Data(
+            "Reclaimed \(formatBytes(allocation.reclaimedBytes ?? 0)). \(history.cleanupLine)\n"
+              .utf8))
+      }
     }
   }
 } catch {
