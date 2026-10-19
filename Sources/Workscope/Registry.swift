@@ -389,6 +389,7 @@ private func cleanup(_ allocation: inout Allocation, store: RegistryStore) throw
       },
       "Execution scope closure is unproven")
     try verifyIdentity(allocation)
+    let reclaimedBytes = measure(allocation.path).privateBytes
     let index = try git(allocation.path, ["ls-files", "-v", "-z"])
     try require(
       index.split(separator: "\0").allSatisfy { field in
@@ -414,7 +415,7 @@ private func cleanup(_ allocation: inout Allocation, store: RegistryStore) throw
     allocation.phase = .removing
     allocation.isRemovalPending = true
     allocation.reason = nil
-    allocation.reclaimedBytes = measure(allocation.path).privateBytes
+    allocation.reclaimedBytes = reclaimedBytes
     try store.save(allocation)
     switch allocation.provider {
     case .simgit:

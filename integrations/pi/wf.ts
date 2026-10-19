@@ -18,6 +18,7 @@ export function argumentsFor(input: {
   status?: number;
   isCleanupAllowed?: boolean;
   isCopyOnWriteRequired?: boolean;
+  since?: string;
 }, cwd: string): string[] {
   const args: string[] = [input.action];
   if (input.action === "start") {
@@ -37,6 +38,10 @@ export function argumentsFor(input: {
     if (!input.kind) throw new Error("retain requires an owner kind");
     args.push("--kind", input.kind);
     if (input.label) args.push("--label", input.label);
+  }
+  if (input.since !== undefined) {
+    if (input.action !== "status") throw new Error("since applies only to status");
+    args.push("--since", input.since);
   }
   if (input.action === "entry-exit") {
     if (!Number.isInteger(input.status)) throw new Error("entry-exit requires an integer status");
@@ -67,6 +72,7 @@ export default async function wf(pi: ExtensionAPI) {
       status: Type.Optional(Type.Integer()),
       isCleanupAllowed: Type.Optional(Type.Boolean({ description: "Request affirmative operator permission for automatic cleanup of this new allocation. Never assume permission." })),
       isCopyOnWriteRequired: Type.Optional(Type.Boolean({ description: "Require the optional simgit copy-on-write provider for this new allocation." })),
+      since: Type.Optional(Type.String({ description: "Cleanup history window for status, such as 24h, 30d, 2w, or all. Default 30d." })),
     }, { additionalProperties: false }),
     executionMode: "sequential",
     async execute(_call, input, signal, _update, ctx) {
@@ -102,7 +108,7 @@ export default async function wf(pi: ExtensionAPI) {
       if (!ctx.hasUI || !(await ctx.ui.confirm("Finish task?", "Workspace, pin, and execution owners remain. A clean authorized checkout can be removed after its final release."))) return;
       const result = await pi.exec(await executable(), ["finish", id.trim()]);
       const isSuccess = result.code === 0 && !result.killed;
-      ctx.ui.notify(isSuccess ? result.stdout : result.stderr, isSuccess ? "info" : "error");
+      ctx.ui.notify(isSuccess ? result.stdout + result.stderr : result.stderr, isSuccess ? "info" : "error");
     },
   });
 }

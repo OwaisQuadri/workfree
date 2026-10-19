@@ -135,6 +135,7 @@ do {
       }
     } else {
       let id = arguments.positional[1]
+      let isRemovedBefore = (try? registry.inspect(id))?.phase == .removed
       let allocation: Allocation
       switch action {
       case "start":
@@ -176,8 +177,9 @@ do {
       default: throw WorkscopeError("Unknown command")
       }
       try output(allocation, isJSON: arguments.isJSON)
-      if action == "finish", !arguments.isJSON, allocation.phase == .removed {
-        let history = try registry.status(since: 30 * 86_400, isLiveMeasured: false)
+      if !arguments.isJSON, !isRemovedBefore, allocation.phase == .removed,
+        let history = try? registry.status(since: 30 * 86_400, isLiveMeasured: false)
+      {
         FileHandle.standardError.write(
           Data(
             "Reclaimed \(formatBytes(allocation.reclaimedBytes ?? 0)). \(history.cleanupLine)\n".utf8))

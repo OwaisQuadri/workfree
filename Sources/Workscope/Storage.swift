@@ -65,7 +65,7 @@ public func parseInterval(_ text: String) throws -> TimeInterval? {
   if text == "all" { return nil }
   let units: [Character: TimeInterval] = ["h": 3_600, "d": 86_400, "w": 604_800]
   guard let unit = text.last, let seconds = units[unit], let count = Int(text.dropLast()),
-    count > 0
+    (1...100_000).contains(count)
   else { throw WorkscopeError("Invalid interval: use a number with h, d, or w, or 'all'") }
   return TimeInterval(count) * seconds
 }
@@ -120,7 +120,7 @@ public struct StorageStatus: Codable, Sendable {
 
   public var cleanupLine: String {
     let window = sinceSeconds.map { "last \(describe($0))" } ?? "all time"
-    return "Auto-cleanup, \(window): \(removedCount) worktrees removed · "
+    return "Auto-cleanup, \(window): \(plural(removedCount, "worktree")) removed · "
       + "\(formatBytes(reclaimedBytes)) reclaimed"
   }
 
@@ -139,9 +139,15 @@ public struct StorageStatus: Codable, Sendable {
   }
 }
 
+func plural(_ count: Int, _ noun: String) -> String {
+  "\(count) \(noun)\(count == 1 ? "" : "s")"
+}
+
 func describe(_ seconds: TimeInterval) -> String {
-  if seconds.truncatingRemainder(dividingBy: 86_400) == 0 { return "\(Int(seconds / 86_400)) days" }
-  return "\(Int(seconds / 3_600)) hours"
+  if seconds >= 172_800, seconds.truncatingRemainder(dividingBy: 86_400) == 0 {
+    return plural(Int(seconds / 86_400), "day")
+  }
+  return plural(Int(seconds / 3_600), "hour")
 }
 
 func storageStatus(
@@ -168,12 +174,13 @@ func storageStatus(
     let base = measure(repository, excluding: members.map(\.path))
     repositories.append(
       StorageStatus.Repository(
-        path: repository, baseBytes: base.privateBytes,
+        path: repository, baseBytes: base.fullBytes,
         worktreeBytes: worktrees.map(\.usage.privateBytes).reduce(0, +), worktrees: worktrees))
   }
   let removed = allocations.filter { allocation in
-    guard allocation.phase == .removed, let removedAt = allocation.removedAt else { return false }
-    return since.map { removedAt >= now.addingTimeInterval(-$0) } ?? true
+    guard allocation.phase == .removed else { return false }
+    guard let since else { return true }
+    return (allocation.removedAt ?? .distantPast) >= now.addingTimeInterval(-since)
   }
   return StorageStatus(
     repositories: repositories, live: live, sinceSeconds: since, removedCount: removed.count,
