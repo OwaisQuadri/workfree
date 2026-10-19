@@ -12,6 +12,7 @@ let help = """
     inspect ID
     list
     status [--since 30d|24h|2w|all]
+    measure PATH...
     retain ID --owner TOKEN --kind task|workspace|execution|pin [--label TEXT]
     release ID --owner TOKEN
     finish ID [--owner TOKEN]
@@ -89,12 +90,16 @@ struct Arguments {
     case "run": allowed = ["--owner", "--"]
     case "inspect", "list", "keep", "unkeep", "recover": allowed = []
     case "status": allowed = ["--since"]
+    case "measure": allowed = []
     default: throw WorkscopeError("Unknown command: \(action)")
     }
     guard flags.subtracting(allowed.union(["--json", "--state-dir"])).isEmpty else {
       throw WorkscopeError("Option not valid for \(action)")
     }
-    guard positional.count == (["list", "status"].contains(action) ? 1 : 2) else {
+    let isCountValid =
+      action == "measure"
+      ? positional.count >= 2 : positional.count == (["list", "status"].contains(action) ? 1 : 2)
+    guard isCountValid else {
       throw WorkscopeError("Wrong number of arguments for \(action)")
     }
     if action == "run", !flags.contains("--") || command.isEmpty {
@@ -126,6 +131,8 @@ do {
     let action = arguments.positional[0]
     if action == "list" {
       try output(registry.list(), isJSON: arguments.isJSON)
+    } else if action == "measure" {
+      try output(measurePaths(Array(arguments.positional.dropFirst())), isJSON: arguments.isJSON)
     } else if action == "status" {
       let status = try registry.status(since: parseInterval(arguments.options["--since"] ?? "30d"))
       if arguments.isJSON {

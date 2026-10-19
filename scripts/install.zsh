@@ -25,7 +25,7 @@ install -d "$prefix/bin" "$prefix/share"
 staging=$(mktemp -d "$prefix/.workfree-install.XXXXXX")
 trap 'rm -rf -- "$staging"' EXIT
 install -d "$staging/bin" "$staging/share/workfree/herdr"
-for name in open close event; do
+for name in open close event sizes; do
   install -m 755 "integrations/herdr/wf-herdr-$name.zsh" "$staging/share/workfree/herdr/wf-herdr-$name.zsh"
 done
 install -m 755 integrations/herdr/wf-herdr-open.zsh "$staging/bin/wf-herdr-open"
