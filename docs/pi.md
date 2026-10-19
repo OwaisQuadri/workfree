@@ -83,12 +83,12 @@ Starting Pi in a home directory does not allocate a worktree.
 An explanation or read-only question need not create one.
 A repository task can explicitly start an allocation and retain it until completion.
 
-The model-facing tool can create, inspect, retain, release, finish, pin, and reconcile allocations.
+The model-facing tool can create, inspect, retain, release, finish, pin, and reconcile allocations, and report storage status.
 Creating an automatically removable allocation requires affirmative operator confirmation.
 In a non-interactive mode, the adapter refuses that permission request rather than assuming approval.
 The default start has no automatic cleanup permission.
 
-`/wf` lists allocations.
+`/wf` shows storage saved, cleanup history, and each live allocation with its identifier and any blocker.
 `/wf <allocation-id>` inspects one.
 `/wf-finish <allocation-id>` asks before finishing its default task.
 Finish does not release workspace, execution, or pin owners.

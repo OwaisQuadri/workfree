@@ -17,7 +17,7 @@ https://github.com/user-attachments/assets/edf2081a-5f2d-4141-9c48-203ec3cbdca5
 
 The silent command-line demo shows Finish retaining a workspace owner, then the last release removing the checkout. Output is filtered with `jq`.
 
-Start a new Pi session and ask it to create a managed worktree. Use `/wf` to inspect tasks and `/wf-finish <allocation>` when a task is done.
+Start a new Pi session and ask it to create a managed worktree. Use `/wf` to see each task, its allocation identifier, and storage saved. Use `/wf-finish <allocation>` when a task is done.
 
 The package builds its own private executable on first use. No separate `wf` installation is needed. The same installed revision reuses its verified runtime. New source gets a matching runtime after you update and reload.
 
@@ -63,9 +63,9 @@ Native checkouts: 1 use 684.6 MB. With simgit, they would use about 120.0 MB (es
 Auto-cleanup, last 30 days: 1 worktree removed · 412.0 MB reclaimed
 
 /path/to/repo  1.2 GB + 2.0 GB
-  feature/a  886.4 MB
-  fix/b  444.8 MB
-  fix/c  684.6 MB
+  feature/a  1a2b3c4d  886.4 MB
+  fix/b  5e6f7a8b  444.8 MB
+  fix/c  9c0d1e2f  684.6 MB  blocked: Changed, staged, untracked, or ignored files remain
 ```
 
 - Full size counts every allocated block. Actual use counts only the blocks that a worktree does not share with an APFS clone.

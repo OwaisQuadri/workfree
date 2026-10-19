@@ -83,6 +83,8 @@ public struct StorageStatus: Codable, Sendable {
     public let path: String
     public let branch: String?
     public let provider: WorktreeProvider
+    public let phase: Phase
+    public let reason: String?
     public let usage: Usage
     public let cowEstimateBytes: Int64?
   }
@@ -132,7 +134,9 @@ public struct StorageStatus: Codable, Sendable {
         "\(repository.path)  \(formatBytes(repository.baseBytes)) + \(formatBytes(repository.worktreeBytes))"
       )
       for worktree in repository.worktrees {
-        lines.append("  \(worktree.branch ?? worktree.id)  \(formatBytes(worktree.usage.privateBytes))")
+        let blocker = worktree.phase == .retained ? "" : "  \(worktree.phase.rawValue)\(worktree.reason.map { ": \($0)" } ?? "")"
+        lines.append(
+          "  \(worktree.branch ?? "-")  \(worktree.id)  \(formatBytes(worktree.usage.privateBytes))\(blocker)")
       }
     }
     return lines.joined(separator: "\n")
@@ -168,7 +172,7 @@ func storageStatus(
       return StorageStatus.Worktree(
         id: allocation.id, path: allocation.path,
         branch: try? git(allocation.path, ["symbolic-ref", "--short", "-q", "HEAD"]),
-        provider: allocation.provider, usage: usage,
+        provider: allocation.provider, phase: allocation.phase, reason: allocation.reason, usage: usage,
         cowEstimateBytes: allocation.provider == .git ? cowEstimate(allocation.path, usage: usage) : nil)
     }
     let base = measure(repository, excluding: members.map(\.path))
