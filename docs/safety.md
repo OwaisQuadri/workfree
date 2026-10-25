@@ -20,6 +20,7 @@ An unknown or crashed scope retains ownership until explicit reconciliation.
 
 A conversation can contain several tasks.
 An agent ending a turn or a pull request being merged does not finish those tasks.
+Durable conversation claims are separate from all legacy owners. They identify a session and its host process using a PID, kernel start identity, and boot identity, never a PID alone. A matching live process, inaccessible process metadata, or identity ambiguity blocks every removal path. Only positively proven process termination makes a claim nonblocking; no heartbeat or elapsed-time rule expires it. Sweeps discard proven-dead claims rather than retaining unbounded dead session history. They never automatically retire legacy owners.
 
 ## Removal
 
@@ -69,7 +70,7 @@ Ambiguous opens, failed metadata registration, and missing close events retain o
 Reconcile those records explicitly after checking the actual workspace state.
 Do not expire them on a timer.
 
-The Pi adapter evaluates recorded permissions at session startup and every 60 seconds.
+The Pi adapter acquires the managed cwd and persisted explicit allocation IDs before its first startup sweep, then evaluates recorded permissions every 60 seconds. Acquisition and all destructive paths serialize under the same registry lock, including removal recovery and explicit owner release. Named structured operations bind before operating; creation and restoration acquire before exposing the checkout. An unavailable target is rejected. No lock is held while waiting for a conversation to end.
 Owner release events also evaluate cleanup.
 A grace period delays eligible policy cleanup.
 New acquisition resets the grace period under the same registry lock as removal.
@@ -77,9 +78,9 @@ A timer never grants permission or expires ownership.
 Shell-only integrations must arrange their own `wf sweep` schedule.
 
 The Pi adapter exposes explicit ownership operations.
-It does not reinterpret session shutdown, agent settlement, or topic changes as task completion.
+It does not reinterpret session shutdown, agent settlement, or topic changes as task completion or conversation closure. Claims survive idle turns, extension reload, and session replacement. Replacement acquires new protection without releasing predecessor claims. Parent and child claims remain independent; terminating one cannot release another.
 It does not automatically wrap third-party subagent dispatch.
-The caller must acquire the assigned owner before dispatch and preserve parent ownership until result acceptance.
+The caller must claim every assigned allocation before dispatch and preserve parent ownership until result acceptance. The adapter persists acquired allocation IDs as non-transcript Pi metadata, including structured targets outside its cwd. It does not infer arbitrary paths from messages. Already-open sessions require explicit backfill or reload. Raw shell access outside the managed cwd requires an explicit claim before use; it is not automatically detected.
 
 ## Limits
 

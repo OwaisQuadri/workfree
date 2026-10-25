@@ -4,12 +4,36 @@ import Foundation
 public struct Registry: Sendable {
   public let stateDirectory: String
 
-  public init(stateDirectory: String? = nil) throws {
+  public let conversation: ConversationContext?
+
+  public init(stateDirectory: String? = nil, conversation: ConversationContext? = nil) throws {
+    self.conversation = conversation
     self.stateDirectory = try canonical(
       stateDirectory
         ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
           "Library/Application Support/workfree"
         ).path)
+  }
+
+  private func withRegistry<T>(
+    _ directory: String, excluding id: String? = nil,
+    _ operation: (RegistryStore) throws -> T
+  ) throws -> T {
+    try withConversationRegistry(directory, conversation: conversation, excluding: id, operation)
+  }
+
+  public func claim(_ id: String? = nil) throws -> [Allocation] {
+    try require(conversation != nil, "Conversation identity is required")
+    return try withRegistry(stateDirectory) { store in
+      if let id {
+        var allocation = try store.allocation(id)
+        try acquireConversation(&allocation, conversation!)
+        try store.save(allocation)
+      }
+      return try store.allocations().filter {
+        $0.conversationClaims?.contains(conversation!.claim) == true
+      }
+    }
   }
 
   public func authorizeCleanup(
@@ -55,10 +79,14 @@ public struct Registry: Sendable {
   public func sweep() throws -> [Allocation] {
     try withRegistry(stateDirectory) { store in
       var results: [Allocation] = []
-      for var allocation in try store.allocations()
-      where allocation.phase != .removed
-        && (allocation.cleanupPolicy != nil || allocation.isCleanupAuthorized)
-      {
+      for var allocation in try store.allocations() {
+        if let claims = allocation.conversationClaims {
+          allocation.conversationClaims = claims.filter { isConversationBlocking($0) }
+          try store.save(allocation)
+        }
+        guard allocation.phase != .removed,
+          allocation.cleanupPolicy != nil || allocation.isCleanupAuthorized
+        else { continue }
         if allocation.isRemovalPending {
           try reconcileRemoval(&allocation, store: store)
         } else {
@@ -71,7 +99,7 @@ public struct Registry: Sendable {
   }
 
   public func restore(_ id: String) throws -> Allocation {
-    try withRegistry(stateDirectory) { store in
+    try withRegistry(stateDirectory, excluding: id) { store in
       var allocation = try store.allocation(id)
       try require(allocation.phase == .removed, "Only a removed allocation can be restored")
       guard let recovery = allocation.recovery else { throw WorkscopeError("No recovery record") }
@@ -121,6 +149,7 @@ public struct Registry: Sendable {
         try verifyIdentity(allocation)
         completeRestore(&allocation)
         allocation.phase = .retained
+        if let conversation { try acquireConversation(&allocation, conversation) }
         recordAttempt(&allocation, event: "restore", reasons: [])
         try store.save(allocation)
         return allocation
@@ -240,6 +269,7 @@ public struct Registry: Sendable {
         try syncDirectory(admin)
         try verifyIdentity(allocation)
         allocation.phase = .retained
+        if let conversation { try acquireConversation(&allocation, conversation) }
         try store.save(allocation)
         return allocation
       } catch {
@@ -328,6 +358,7 @@ public struct Registry: Sendable {
     try withRegistry(stateDirectory) { store in
       var allocation = try store.allocation(id)
       if allocation.phase == .removed { return allocation }
+      try require(conversationReasons(allocation).isEmpty, "Conversation prevents recovery")
       if allocation.phase == .creating || allocation.phase == .failed {
         do {
           if allocation.recovery != nil {

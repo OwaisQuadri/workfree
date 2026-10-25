@@ -14,7 +14,7 @@ pi install git:https://github.com/OwaisQuadri/workfree
 Start a new Pi session or reload extensions. No global `wf` or shell installation is required.
 The root Git package owns the Pi integration. Shell and Herdr installation are optional and do not activate Pi.
 
-At session startup, Workfree prepares the executable for its first sweep.
+At session startup, Workfree prepares the executable, acquires conversation claims, then performs its first sweep. Failed acquisition prevents that startup sweep and timer.
 Workfree reuses the validated executable for the Git revision captured when the extension loaded, or compiles that revision if none is bound.
 Compilation uses a private temporary source snapshot and scratch directory, not Pi's managed checkout.
 The completed executable lives at `~/Library/Application Support/workfree/runtime/<sha256>/wf` with private, read-only executable permissions.
@@ -92,7 +92,7 @@ The default start has no automatic cleanup permission.
 The tool also exposes `authorize-cleanup`, `revoke-cleanup`, `preview`, `sweep`, and `restore`.
 A recoverable policy requires affirmative confirmation, including its grace period and optional disposable path.
 Task owners can survive eviction under that policy.
-Execution, workspace, and pin owners still block removal.
+Execution, workspace, and pin owners still block removal. Live or uncertain conversation claims also block removal.
 The adapter sweeps recorded grants at session startup and every 60 seconds.
 Session shutdown stops the timer without releasing owners.
 No scheduler is installed outside Pi.
@@ -101,6 +101,25 @@ No scheduler is installed outside Pi.
 `/wf <allocation-id>` inspects one.
 `/wf-finish <allocation-id>` asks before finishing its default task.
 Finish does not release workspace, execution, or pin owners.
+
+## Conversation protection
+
+Before its first sweep, the adapter claims the managed working directory and allocation IDs saved in Pi's non-transcript `appendEntry` metadata. It never extracts paths or assignments from personal messages.
+Every structured `wf` operation binds its named allocation under the registry lock before operating on it. `start` and `restore` return an already-claimed checkout from that same lock.
+The adapter saves acquired allocation IDs, including targets outside its working directory, for reload and reopen. This safety metadata accumulates actual acquisitions across conversation branches rather than treating an abandoned branch as proof that file use stopped.
+
+A claim records the session ID, Pi host PID, kernel process start identity, and boot identity. Swift checks macOS process metadata; PID reuse is not a live match. A matching process or inaccessible/ambiguous identity blocks removal, even while idle. Only positively proven process termination makes a claim nonblocking. Sweeps prune proven-dead claims without retiring task, workspace, execution, or pin owners.
+`agent_end`, extension reload, and `session_shutdown` do not release claims. Session replacement acquires new protection while predecessor claims remain. Consequently a switched-away conversation can conservatively retain allocations until that host process exits. No inactivity timeout can prove closure.
+
+Use the tool's `claim` action with an allocation ID before raw shell access outside the managed cwd or before dispatching a child. An already-open conversation needs this explicit backfill or extension reload; installing this version does not retroactively discover its assignments.
+A direct CLI backfill uses the **Pi host's** session ID and PID, not the PID of `wf` or a short-lived shell:
+
+```zsh
+wf --session-id <pi-session-id> --session-pid <pi-host-pid> claim <allocation-id>
+```
+
+The CLI records durable registry protection. To persist that assignment in Pi metadata as well, use the structured tool's `claim` action in that conversation. Sessionless shell commands remain available, but cannot infer which conversation is using an arbitrary path. Raw shell access without an explicit claim is outside this protection contract.
+Unavailable or removal-pending targets are rejected, never adopted. If saved allocation IDs cannot be acquired, startup fails closed; inspect the recorded allocation and explicitly restore a removed target before retrying. No process waits under the registry lock for a conversation to end.
 
 ## Multiple tasks without subagents
 
@@ -117,7 +136,7 @@ Agent settlement, a merged pull request, and session shutdown do not trigger aut
 ## Subagents
 
 This adapter does not intercept or replace a third-party subagent dispatcher.
-The parent must acquire ownership before it dispatches work.
+The parent must claim each assigned allocation before it dispatches work and retain any required execution ownership. A child with this adapter claims its managed cwd at startup; other dispatchers must explicitly backfill a claim using that child's verified host identity. Parent and child claims are independent; a child exiting cannot clear the parent's protection.
 
 For a reader, retain an owner on the existing allocation.
 For an independent writer, start a separate allocation and pass its returned path as the child's working directory.

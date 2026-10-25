@@ -53,6 +53,7 @@ public struct Allocation: Codable, Sendable {
   public internal(set) var recovery: RecoveryRecord?
   public internal(set) var cleanupAttempts: [CleanupAttempt]?
   public internal(set) var pastRemovals: [Reclamation]?
+  public internal(set) var conversationClaims: [ConversationClaim]?
 }
 
 public struct Reclamation: Codable, Sendable {

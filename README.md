@@ -76,7 +76,7 @@ wf revoke-cleanup <allocation>
 ```
 
 The grant covers that allocation, including later restored checkouts. It does not grant permission for other allocations.
-Under this policy, task owners survive checkout removal. Workspace, execution, and pin owners still block removal.
+Under this policy, task owners survive checkout removal. Workspace, execution, and pin owners still block removal, as do live or uncertain conversation claims.
 The first eligible event starts the grace period. Acquiring an owner resets it.
 Owner releases and later sweeps evaluate eligibility again.
 The Pi adapter asks for confirmation before a policy grant.
@@ -138,7 +138,11 @@ Cleanup is disabled unless you permit it for an allocation. Modified, staged, un
 
 Ownership is cooperative. Command exit does not prove that detached children have stopped. Execution owners remain until their scope is explicitly closed. Workfree does not detect or contain arbitrary processes using a checkout.
 
-The Pi adapter evaluates recorded cleanup permissions at session startup and every 60 seconds while the session runs. Shell-only users can schedule `wf sweep` with their existing scheduler. No daemon or scheduler is installed. Interrupted removal can be reconciled without granting new cleanup permission. Read the [safety contract](docs/safety.md) before integrating another host.
+The Pi adapter protects its managed cwd and explicitly acquired allocations before its first startup sweep, then evaluates recorded cleanup permissions every 60 seconds. Durable conversation claims use the Pi host's PID, kernel start identity, and boot identity. Live or uncertain identity blocks deletion between turns, across reload, and during session replacement; no inactivity timeout releases protection. A child's exit cannot clear a parent's claim. Proven-dead claims are pruned without releasing legacy owners.
+
+Use the structured `wf` tool's `claim` action before raw shell use of another allocation or child dispatch. Acquired IDs persist in non-transcript Pi metadata for reopen. Existing conversations need explicit backfill or reload; arbitrary paths in messages are not discovered. See [conversation protection](docs/pi.md#conversation-protection).
+
+Shell-only users can schedule `wf sweep` with their existing scheduler. No daemon or scheduler is installed. Interrupted removal can be reconciled without granting new cleanup permission. Read the [safety contract](docs/safety.md) before integrating another host.
 
 ## Contribute or get help
 
