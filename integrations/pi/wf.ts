@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createExecutableResolver } from "./runtime.ts";
 
-const actions = ["start", "inspect", "list", "status", "retain", "release", "finish", "keep", "unkeep", "close-scope", "entry-exit", "recover"] as const;
+const actions = ["start", "inspect", "list", "status", "retain", "release", "finish", "keep", "unkeep", "close-scope", "entry-exit", "recover", "authorize-cleanup", "revoke-cleanup", "preview", "sweep", "restore"] as const;
 
 export function argumentsFor(input: {
   action: typeof actions[number];
@@ -19,6 +19,8 @@ export function argumentsFor(input: {
   isCleanupAllowed?: boolean;
   isCopyOnWriteRequired?: boolean;
   since?: string;
+  graceSeconds?: number;
+  disposablePath?: string;
 }, cwd: string): string[] {
   const args: string[] = [input.action];
   if (input.action === "start") {
@@ -26,7 +28,7 @@ export function argumentsFor(input: {
     args.push(input.branch, "--repo", input.repo ?? cwd);
     if (input.isCleanupAllowed) args.push("--allow-cleanup");
     if (input.isCopyOnWriteRequired) args.push("--require-cow");
-  } else if (input.action !== "list" && input.action !== "status") {
+  } else if (!["list", "status", "preview", "sweep"].includes(input.action)) {
     if (!input.id) throw new Error(`${input.action} requires an allocation id`);
     args.push(input.id);
   }
@@ -47,6 +49,14 @@ export function argumentsFor(input: {
     if (!Number.isInteger(input.status)) throw new Error("entry-exit requires an integer status");
     args.push("--status", String(input.status));
   }
+  if (input.graceSeconds !== undefined || input.disposablePath !== undefined) {
+    if (input.action !== "authorize-cleanup") throw new Error("Policy options apply only to authorize-cleanup");
+    if (input.graceSeconds !== undefined) {
+      if (!Number.isFinite(input.graceSeconds) || input.graceSeconds < 0 || input.graceSeconds > 86400) throw new Error("Invalid grace period");
+      args.push("--grace-seconds", String(input.graceSeconds));
+    }
+    if (input.disposablePath !== undefined) args.push("--disposable-path", input.disposablePath);
+  }
   return ["--json", ...args];
 }
 
@@ -57,10 +67,32 @@ export default async function wf(pi: ExtensionAPI) {
     join(homedir(), "Library", "Application Support", "workfree", "runtime"),
     process.env.WF_BIN,
   );
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const sweep = async (ctx: { ui: { notify: (message: string, type: "error") => void } }) => {
+    try {
+      const result = await pi.exec(await executable(), ["--json", "sweep"]);
+      if (result.code !== 0 || result.killed) throw new Error(result.stderr || "Cleanup sweep failed");
+    } catch (error) {
+      ctx.ui.notify(String(error), "error");
+    }
+  };
+  pi.on("session_start", async (_event, ctx) => {
+    if (timer) clearInterval(timer);
+    await sweep(ctx);
+    let isSweeping = false;
+    timer = setInterval(async () => {
+      if (isSweeping) return;
+      isSweeping = true;
+      try { await sweep(ctx); } finally { isSweeping = false; }
+    }, 60_000);
+    timer.unref();
+  });
+  pi.on("session_shutdown", () => { if (timer) clearInterval(timer); timer = undefined; });
+
   pi.registerTool({
     name: "wf",
     label: "Workfree",
-    description: "Manage explicit task and checkout ownership. Task completion, window closure, and execution closure are separate. Never infer scope closure from command exit or merge status. Start defaults to retaining the checkout without automatic cleanup permission.",
+    description: "Manage task identity, active checkout users, and recoverable cleanup. authorize-cleanup requires operator confirmation. Under that policy, task owners survive eviction; workspace, execution, and pin owners block it. Never infer scope closure from command exit. preview is read-only; sweep evaluates recorded permissions; restore recreates the preserved commit.",
     parameters: Type.Object({
       action: Type.Union(actions.map((action) => Type.Literal(action))),
       id: Type.Optional(Type.String()),
@@ -73,6 +105,8 @@ export default async function wf(pi: ExtensionAPI) {
       isCleanupAllowed: Type.Optional(Type.Boolean({ description: "Request affirmative operator permission for automatic cleanup of this new allocation. Never assume permission." })),
       isCopyOnWriteRequired: Type.Optional(Type.Boolean({ description: "Require the optional simgit copy-on-write provider for this new allocation." })),
       since: Type.Optional(Type.String({ description: "Cleanup history window for status, such as 24h, 30d, 2w, or all. Default 30d." })),
+      graceSeconds: Type.Optional(Type.Number({ description: "authorize-cleanup grace period, 0 to 86400 seconds; default 60." })),
+      disposablePath: Type.Optional(Type.String({ description: "authorize-cleanup only: one explicit checkout-relative generated path. Never use for secrets or useful ignored files." })),
     }, { additionalProperties: false }),
     executionMode: "sequential",
     async execute(_call, input, signal, _update, ctx) {
@@ -83,6 +117,12 @@ export default async function wf(pi: ExtensionAPI) {
         }
       }
       const args = argumentsFor(input, ctx.cwd);
+      if (input.action === "authorize-cleanup") {
+        if (!ctx.hasUI || !(await ctx.ui.confirm("Authorize recoverable cleanup?",
+          `Allocation: ${input.id}\nGrace: ${input.graceSeconds ?? 60} seconds\nDisposable generated path: ${input.disposablePath ?? "none"}\nAllow automatic eviction after active workspace, execution, and pin owners release. Task identity and an exact Git recovery reference survive. Unsaved files block removal.`))) {
+          throw new Error("Recoverable cleanup was not authorized");
+        }
+      }
       const result = await pi.exec(await executable(signal), args, { signal });
       if (result.code !== 0 || result.killed) throw new Error(result.stderr || result.stdout || `wf failed with exit code ${result.code}`);
       let details: unknown;

@@ -155,7 +155,7 @@ public struct StorageStatus: Codable, Sendable {
   public var cleanupLine: String {
     let window = sinceSeconds.map { "last \(describe($0))" } ?? "all time"
     return "Auto-cleanup, \(window): \(plural(removedCount, "worktree")) removed · "
-      + "\(formatBytes(reclaimedBytes)) reclaimed"
+      + "\(formatBytes(reclaimedBytes)) reclaimed (estimated private bytes)"
   }
 
   public var text: String {
@@ -224,7 +224,9 @@ func storageStatus(
       return StorageStatus.Worktree(
         id: allocation.id, path: allocation.path,
         branch: try? git(allocation.path, ["symbolic-ref", "--short", "-q", "HEAD"]),
-        provider: allocation.provider, phase: allocation.phase, reason: allocation.reason,
+        provider: allocation.provider, phase: allocation.phase,
+        reason: Array(Set(ownershipReasons(allocation) + (allocation.reason.map { [$0] } ?? [])))
+          .sorted().joined(separator: "; "),
         usage: usage,
         cowEstimateBytes: allocation.provider == .git
           ? cowEstimate(allocation.path, usage: usage) : nil)
@@ -235,13 +237,18 @@ func storageStatus(
         path: repository, baseBytes: base.fullBytes,
         worktreeBytes: worktrees.map(\.usage.privateBytes).reduce(0, +), worktrees: worktrees))
   }
-  let removed = allocations.filter { allocation in
-    guard allocation.phase == .removed else { return false }
-    guard let since else { return true }
-    return (allocation.removedAt ?? .distantPast) >= now.addingTimeInterval(-since)
-  }
+  let removed = allocations.flatMap { allocation -> [Reclamation] in
+    var history = allocation.pastRemovals ?? []
+    if allocation.phase == .removed {
+      history.append(
+        Reclamation(
+          date: allocation.removedAt ?? .distantPast, estimatedBytes: allocation.reclaimedBytes ?? 0
+        ))
+    }
+    return history
+  }.filter { since == nil || $0.date >= now.addingTimeInterval(-since!) }
   return StorageStatus(
     repositories: repositories, missing: missing, live: live, sinceSeconds: since,
     removedCount: removed.count,
-    reclaimedBytes: removed.compactMap(\.reclaimedBytes).reduce(0, +))
+    reclaimedBytes: removed.map(\.estimatedBytes).reduce(0, +))
 }

@@ -14,7 +14,8 @@ pi install git:https://github.com/OwaisQuadri/workfree
 Start a new Pi session or reload extensions. No global `wf` or shell installation is required.
 The root Git package owns the Pi integration. Shell and Herdr installation are optional and do not activate Pi.
 
-On the first tool or command use, Workfree reuses the validated executable for the Git revision captured when the extension loaded, or compiles that revision if none is bound.
+At session startup, Workfree prepares the executable for its first sweep.
+Workfree reuses the validated executable for the Git revision captured when the extension loaded, or compiles that revision if none is bound.
 Compilation uses a private temporary source snapshot and scratch directory, not Pi's managed checkout.
 The completed executable lives at `~/Library/Application Support/workfree/runtime/<sha256>/wf` with private, read-only executable permissions.
 First use can take time and fails if the required tools are unavailable. A later use retries a failed build without choosing a global or older executable.
@@ -87,6 +88,14 @@ The model-facing tool can create, inspect, retain, release, finish, pin, and rec
 Creating an automatically removable allocation requires affirmative operator confirmation.
 In a non-interactive mode, the adapter refuses that permission request rather than assuming approval.
 The default start has no automatic cleanup permission.
+
+The tool also exposes `authorize-cleanup`, `revoke-cleanup`, `preview`, `sweep`, and `restore`.
+A recoverable policy requires affirmative confirmation, including its grace period and optional disposable path.
+Task owners can survive eviction under that policy.
+Execution, workspace, and pin owners still block removal.
+The adapter sweeps recorded grants at session startup and every 60 seconds.
+Session shutdown stops the timer without releasing owners.
+No scheduler is installed outside Pi.
 
 `/wf` shows storage saved, cleanup history, and each live allocation with its identifier and any blocker.
 `/wf <allocation-id>` inspects one.

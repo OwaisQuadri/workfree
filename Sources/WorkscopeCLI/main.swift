@@ -21,6 +21,11 @@ let help = """
     close-scope ID --owner TOKEN
     entry-exit ID --owner TOKEN --status INTEGER
     recover ID
+    authorize-cleanup ID [--grace-seconds 60] [--disposable-path PATH]
+    revoke-cleanup ID
+    preview
+    sweep
+    restore ID
     run ID [--owner TOKEN] -- COMMAND...
     --help
     --version
@@ -63,7 +68,7 @@ struct Arguments {
         case "--help": isHelp = true
         case "--version": isVersion = true
         case "--state-dir", "--repo", "--base", "--path", "--owner", "--kind", "--label",
-          "--status", "--provider", "--since":
+          "--status", "--provider", "--since", "--grace-seconds", "--disposable-path":
           index += 1
           guard index < arguments.count,
             argument == "--label"
@@ -88,7 +93,10 @@ struct Arguments {
     case "release", "finish", "close-scope": allowed = ["--owner"]
     case "entry-exit": allowed = ["--owner", "--status"]
     case "run": allowed = ["--owner", "--"]
-    case "inspect", "list", "keep", "unkeep", "recover": allowed = []
+    case "inspect", "list", "keep", "unkeep", "recover", "revoke-cleanup", "restore", "preview",
+      "sweep":
+      allowed = []
+    case "authorize-cleanup": allowed = ["--grace-seconds", "--disposable-path"]
     case "status": allowed = ["--since"]
     case "measure": allowed = []
     default: throw WorkscopeError("Unknown command: \(action)")
@@ -98,7 +106,8 @@ struct Arguments {
     }
     let isCountValid =
       action == "measure"
-      ? positional.count >= 2 : positional.count == (["list", "status"].contains(action) ? 1 : 2)
+      ? positional.count >= 2
+      : positional.count == (["list", "status", "preview", "sweep"].contains(action) ? 1 : 2)
     guard isCountValid else {
       throw WorkscopeError("Wrong number of arguments for \(action)")
     }
@@ -119,6 +128,18 @@ func output<T: Encodable>(_ value: T, isJSON: Bool) throws {
   print(String(decoding: try encoder.encode(value), as: UTF8.self))
 }
 
+struct CleanupPlan: Encodable {
+  let allocations: [CleanupPreview]
+  let candidateCount: Int
+  let estimatedBytes: Int64
+
+  init(_ allocations: [CleanupPreview]) {
+    self.allocations = allocations
+    candidateCount = allocations.filter(\.isEligible).count
+    estimatedBytes = allocations.filter(\.isEligible).map(\.estimatedBytes).reduce(0, +)
+  }
+}
+
 let rawArguments = Array(CommandLine.arguments.dropFirst())
 do {
   let arguments = try Arguments(rawArguments)
@@ -129,7 +150,11 @@ do {
   } else {
     let registry = try Registry(stateDirectory: arguments.options["--state-dir"])
     let action = arguments.positional[0]
-    if action == "list" {
+    if action == "preview" {
+      try output(CleanupPlan(registry.preview()), isJSON: arguments.isJSON)
+    } else if action == "sweep" {
+      try output(registry.sweep(), isJSON: arguments.isJSON)
+    } else if action == "list" {
       try output(registry.list(), isJSON: arguments.isJSON)
     } else if action == "measure" {
       try output(measurePaths(Array(arguments.positional.dropFirst())), isJSON: arguments.isJSON)
@@ -179,6 +204,15 @@ do {
         }
         allocation = try registry.entryExit(id, owner: arguments.value("--owner"), status: status)
       case "recover": allocation = try registry.recover(id)
+      case "authorize-cleanup":
+        guard let grace = TimeInterval(arguments.options["--grace-seconds"] ?? "60") else {
+          throw WorkscopeError("Invalid grace period")
+        }
+        allocation = try registry.authorizeCleanup(
+          id, graceSeconds: grace,
+          disposablePaths: arguments.options["--disposable-path"].map { [$0] } ?? [])
+      case "revoke-cleanup": allocation = try registry.revokeCleanup(id)
+      case "restore": allocation = try registry.restore(id)
       case "run":
         exit(try registry.run(id, owner: arguments.options["--owner"], command: arguments.command))
       default: throw WorkscopeError("Unknown command")

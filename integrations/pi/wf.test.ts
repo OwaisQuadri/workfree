@@ -61,7 +61,7 @@ test("finish, workspace release, and execution closure remain separate operation
   await f.run({ action: "release", id: "allocation", owner: "workspace" });
   await f.run({ action: "close-scope", id: "allocation", owner: "execution" });
   assert.deepEqual(f.calls, [["--json", "finish", "allocation"], ["--json", "release", "allocation", "--owner", "workspace"], ["--json", "close-scope", "allocation", "--owner", "execution"]]);
-  assert.equal(f.handlers.size, 0);
+  assert.deepEqual([...f.handlers.keys()], ["session_start", "session_shutdown"]);
 });
 
 test("tools and commands share the captured override and reject killed CLI results", async () => {
@@ -80,6 +80,26 @@ test("malformed task and owner operations fail before invoking the executable", 
   assert.throws(() => argumentsFor({ action: "release", id: "allocation" }, "/repo"), /owner/);
   assert.throws(() => argumentsFor({ action: "retain", id: "allocation", owner: "reader" }, "/repo"), /kind/);
   assert.throws(() => argumentsFor({ action: "entry-exit", id: "allocation", owner: "execution", status: 1.5 }, "/repo"), /integer/);
+});
+
+test("recoverable policy requires confirmation and cannot grant itself permission through a sweep", async () => {
+  const denied = await fixture();
+  await assert.rejects(denied.run({ action: "authorize-cleanup", id: "allocation" }), /not authorized/);
+  assert.deepEqual(denied.calls, []);
+  const approved = await fixture(true);
+  await approved.run({ action: "authorize-cleanup", id: "allocation", graceSeconds: 120, disposablePath: ".build" });
+  assert.deepEqual(approved.calls, [["--json", "authorize-cleanup", "allocation", "--grace-seconds", "120", "--disposable-path", ".build"]]);
+  approved.ctx.hasUI = false;
+  await assert.rejects(approved.run({ action: "authorize-cleanup", id: "allocation" }), /not authorized/);
+  await approved.run({ action: "sweep" });
+  assert.deepEqual(approved.calls.at(-1), ["--json", "sweep"]);
+});
+
+test("session startup evaluates saved policies and shutdown clears its sweep timer", async () => {
+  const f = await fixture();
+  await f.handlers.get("session_start")({}, f.ctx);
+  assert.deepEqual(f.calls, [["--json", "sweep"]]);
+  await f.handlers.get("session_shutdown")({}, f.ctx);
 });
 
 test("the Finish command cannot infer operator intent or override other owners", async () => {

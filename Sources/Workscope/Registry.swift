@@ -12,6 +12,130 @@ public struct Registry: Sendable {
         ).path)
   }
 
+  public func authorizeCleanup(
+    _ id: String, graceSeconds: TimeInterval = 60, disposablePaths: [String] = []
+  ) throws -> Allocation {
+    try require(
+      graceSeconds.isFinite && (0...86_400).contains(graceSeconds), "Invalid grace period")
+    for path in disposablePaths { try validateDisposablePath(path) }
+    return try withRegistry(stateDirectory) { store in
+      var allocation = try store.allocation(id)
+      try require(
+        !allocation.isRemovalPending && allocation.phase != .removed, "Allocation is unavailable")
+      try verifyIdentity(allocation)
+      allocation.cleanupPolicy = CleanupPolicy(
+        graceSeconds: graceSeconds, disposablePaths: disposablePaths)
+      allocation.eligibleSince = nil
+      recordAttempt(&allocation, event: "policy-grant", reasons: ["Awaiting cleanup evaluation"])
+      try store.save(allocation)
+      return allocation
+    }
+  }
+
+  public func revokeCleanup(_ id: String) throws -> Allocation {
+    try withRegistry(stateDirectory) { store in
+      var allocation = try store.allocation(id)
+      try require(!allocation.isRemovalPending, "Removal is pending")
+      allocation.cleanupPolicy = nil
+      allocation.isCleanupAuthorized = false
+      allocation.eligibleSince = nil
+      recordAttempt(&allocation, event: "policy-revoke", reasons: ["Cleanup is not authorized"])
+      try store.save(allocation)
+      return allocation
+    }
+  }
+
+  public func preview(_ id: String? = nil) throws -> [CleanupPreview] {
+    try withRegistry(stateDirectory) { store in
+      let allocations = try id.map { [try store.allocation($0)] } ?? store.allocations()
+      return allocations.filter { $0.phase != .removed }.map { cleanupPreview($0) }
+    }
+  }
+
+  public func sweep() throws -> [Allocation] {
+    try withRegistry(stateDirectory) { store in
+      var results: [Allocation] = []
+      for var allocation in try store.allocations()
+      where allocation.phase != .removed
+        && (allocation.cleanupPolicy != nil || allocation.isCleanupAuthorized)
+      {
+        if allocation.isRemovalPending {
+          try reconcileRemoval(&allocation, store: store)
+        } else {
+          try cleanup(&allocation, store: store, event: "sweep")
+        }
+        results.append(allocation)
+      }
+      return results
+    }
+  }
+
+  public func restore(_ id: String) throws -> Allocation {
+    try withRegistry(stateDirectory) { store in
+      var allocation = try store.allocation(id)
+      try require(allocation.phase == .removed, "Only a removed allocation can be restored")
+      guard let recovery = allocation.recovery else { throw WorkscopeError("No recovery record") }
+      try verifyRecovery(allocation)
+      try require(try !isPresent(allocation.path), "Restore destination is occupied")
+      try require(
+        try !isRegistered(allocation.repository, allocation.path),
+        "Restore destination is registered")
+      let branch = "workfree/restore/" + id + "/" + UUID().uuidString.lowercased()
+      allocation.phase = .creating
+      allocation.eligibleSince = nil
+      allocation.reason = nil
+      try store.save(allocation)
+      do {
+        switch allocation.provider {
+        case .simgit:
+          let creation = try JSONDecoder().decode(
+            Creation.self,
+            from: Data(
+              try command(
+                "/usr/bin/env",
+                [
+                  "simgit", "add", branch, "--path", allocation.path, "--base", recovery.commit,
+                  "--require-cow", "--json",
+                ], at: allocation.repository
+              ).utf8))
+          try require(
+            try canonical(creation.path) == allocation.path && creation.mode == "cow-clone"
+              && !creation.cleanupToken.isEmpty, "Unexpected restored checkout")
+        case .git:
+          _ = try git(
+            allocation.repository,
+            ["worktree", "add", "-b", branch, "--", allocation.path, recovery.commit])
+        }
+        allocation.admin = try canonical(git(allocation.path, ["rev-parse", "--absolute-git-dir"]))
+        try verifyRepository(allocation)
+        try require(
+          try git(allocation.path, ["rev-parse", "HEAD"]) == recovery.commit,
+          "Restored commit mismatch")
+        let descriptor = try privateFile(
+          allocation.admin! + "/workfree-allocation", isCreating: true)
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        try handle.write(contentsOf: marker(allocation))
+        try require(fsync(descriptor) == 0, "Cannot sync allocation marker")
+        try handle.close()
+        try syncDirectory(allocation.admin!)
+        try verifyIdentity(allocation)
+        completeRestore(&allocation)
+        allocation.phase = .retained
+        recordAttempt(&allocation, event: "restore", reasons: [])
+        try store.save(allocation)
+        return allocation
+      } catch {
+        allocation.phase =
+          (try? isPresent(allocation.path)) == false
+            && (try? isRegistered(allocation.repository, allocation.path)) == false
+          ? .removed : .failed
+        allocation.reason = "Restore interrupted; preserved commit remains available: \(error)"
+        try store.save(allocation)
+        throw error
+      }
+    }
+  }
+
   public func list() throws -> [Allocation] {
     try withRegistry(stateDirectory) { try $0.allocations() }
   }
@@ -143,7 +267,13 @@ public struct Registry: Sendable {
   }
 
   public func finish(_ id: String, owner token: String? = nil) throws -> Allocation {
-    try retire(id, token: token ?? "task:\(id)", requiredKind: .task, isCooperativeClosure: false)
+    try withRegistry(stateDirectory) { store in
+      var allocation = try store.allocation(id)
+      try retireOwner(
+        &allocation, token: token ?? allocation.defaultTaskToken ?? "task:\(id)",
+        requiredKind: .task, isCooperativeClosure: false, store: store)
+      return allocation
+    }
   }
 
   public func keep(_ id: String) throws -> Allocation {
@@ -200,7 +330,19 @@ public struct Registry: Sendable {
       if allocation.phase == .removed { return allocation }
       if allocation.phase == .creating || allocation.phase == .failed {
         do {
+          if allocation.recovery != nil {
+            try verifyRecovery(allocation)
+            if try !isPresent(allocation.path)
+              && !isRegistered(allocation.repository, allocation.path)
+            {
+              allocation.phase = .removed
+              allocation.reason = nil
+              try store.save(allocation)
+              return allocation
+            }
+          }
           try verifyIdentity(allocation)
+          if allocation.recovery != nil { completeRestore(&allocation) }
           allocation.phase = .retained
           allocation.reason = nil
           try store.save(allocation)
@@ -211,9 +353,9 @@ public struct Registry: Sendable {
           return allocation
         }
       }
-      if allocation.owners.isEmpty, allocation.isRemovalPending,
-        try !isPresent(allocation.path)
-      {
+      if allocation.isRemovalPending {
+        try reconcileRemoval(&allocation, store: store)
+      } else if allocation.owners.isEmpty, try !isPresent(allocation.path) {
         do {
           try require(allocation.isCleanupAuthorized, "Cleanup is not authorized")
           try require(
@@ -277,6 +419,21 @@ public struct Registry: Sendable {
   }
 }
 
+private func completeRestore(_ allocation: inout Allocation) {
+  if let removedAt = allocation.removedAt {
+    var history = allocation.pastRemovals ?? []
+    history.append(Reclamation(date: removedAt, estimatedBytes: allocation.reclaimedBytes ?? 0))
+    allocation.pastRemovals = history
+  }
+  allocation.removedAt = nil
+  allocation.reclaimedBytes = nil
+  if !allocation.owners.values.contains(where: { $0.kind == .task }) {
+    let token = "task:restore:" + UUID().uuidString.lowercased()
+    allocation.owners[token] = Owner(kind: .task, label: "Restored task")
+    allocation.defaultTaskToken = token
+  }
+}
+
 private func retainOwner(
   _ allocation: inout Allocation, token: String, kind: OwnerKind, label: String?,
   store: RegistryStore
@@ -294,6 +451,7 @@ private func retainOwner(
   }
   allocation.phase = .retained
   allocation.reason = nil
+  allocation.eligibleSince = nil
   try store.save(allocation)
 }
 
@@ -321,7 +479,7 @@ private func validToken(_ token: String) throws {
   try require(!token.isEmpty && !token.utf8.contains(0), "Invalid owner token")
 }
 
-private func repositoryIdentity(_ repository: String) throws -> String {
+func repositoryIdentity(_ repository: String) throws -> String {
   let common = try canonical(
     git(repository, ["rev-parse", "--path-format=absolute", "--git-common-dir"]))
   var info = stat()
@@ -355,7 +513,7 @@ private func verifyRepository(_ allocation: Allocation) throws {
     admin.hasPrefix(common + "/worktrees/"), "Not a linked-worktree administrative directory")
 }
 
-private func verifyIdentity(_ allocation: Allocation) throws {
+func verifyIdentity(_ allocation: Allocation) throws {
   try verifyRepository(allocation)
   guard let admin = allocation.admin else {
     throw WorkscopeError("Missing administrative identity")
@@ -367,77 +525,4 @@ private func verifyIdentity(_ allocation: Allocation) throws {
   try require(
     try isRegistered(allocation.repository, allocation.path),
     "Checkout registration changed")
-}
-
-private func cleanup(_ allocation: inout Allocation, store: RegistryStore) throws {
-  if !allocation.owners.isEmpty {
-    if allocation.phase != .creating && allocation.phase != .failed {
-      allocation.phase = .retained
-      allocation.reason = nil
-      try store.save(allocation)
-    }
-    return
-  }
-  if allocation.phase == .creating || allocation.phase == .failed { return }
-  allocation.phase = .checking
-  try store.save(allocation)
-  do {
-    try require(allocation.isCleanupAuthorized, "Cleanup is not authorized")
-    try require(
-      allocation.retiredOwners.values.allSatisfy {
-        $0.kind != .execution || $0.isCooperativelyClosed
-      },
-      "Execution scope closure is unproven")
-    try verifyIdentity(allocation)
-    let index = try git(allocation.path, ["ls-files", "-v", "-z"])
-    try require(
-      index.split(separator: "\0").allSatisfy { field in
-        guard let flag = field.first else { return false }
-        return flag != "S" && !flag.isLowercase
-      }, "Index flags can hide tracked changes")
-    let entries = try git(allocation.path, ["ls-files", "--stage", "-z"])
-    try require(
-      !entries.split(separator: "\0").contains { $0.hasPrefix("160000 ") },
-      "Submodule preservation is unproven")
-    func requireClean() throws {
-      let status = try git(
-        allocation.path,
-        [
-          "status", "--porcelain=v1", "--untracked-files=all", "--ignored",
-          "--ignore-submodules=none",
-        ])
-      try require(status.isEmpty, "Changed, staged, untracked, or ignored files remain")
-    }
-    try requireClean()
-    let reclaimedBytes = measure(allocation.path).privateBytes
-    try requireClean()
-    let head = try git(allocation.path, ["rev-parse", "HEAD"])
-    let refs = try git(
-      allocation.repository,
-      ["for-each-ref", "--contains", head, "--format=%(refname)", "refs/heads", "refs/tags"])
-    try require(!refs.isEmpty, "No ordinary branch or tag preserves HEAD")
-    allocation.phase = .removing
-    allocation.isRemovalPending = true
-    allocation.reason = nil
-    allocation.reclaimedBytes = reclaimedBytes
-    try store.save(allocation)
-    switch allocation.provider {
-    case .simgit:
-      _ = try command(
-        "/usr/bin/env", ["simgit", "remove", allocation.path], at: allocation.repository)
-    case .git:
-      _ = try git(allocation.repository, ["worktree", "remove", "--", allocation.path])
-    }
-    try require(try !isPresent(allocation.path), "Checkout remains")
-    try require(
-      try !isRegistered(allocation.repository, allocation.path),
-      "Removal left a registration")
-    allocation.phase = .removed
-    allocation.isRemovalPending = false
-    allocation.removedAt = Date()
-  } catch {
-    allocation.phase = .blocked
-    allocation.reason = String(describing: error)
-  }
-  try store.save(allocation)
 }

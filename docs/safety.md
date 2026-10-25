@@ -27,9 +27,17 @@ Automatic cleanup requires an affirmative grant for that allocation.
 The default is no grant.
 Existing worktrees remain unmanaged.
 
-Before removal, require zero owners, matching allocation identity, a non-primary checkout, no valuable file changes, and retained commit references.
-Modified, staged, untracked, and ignored files block cleanup.
-Workfree does not infer that ignored files are disposable.
+Legacy cleanup requires zero owners.
+An explicit recoverable policy lets task owners survive eviction.
+Workspace, execution, and pin owners must still release before removal.
+Age, command exit, and a saved commit do not prove that those users stopped.
+
+Removal requires matching allocation identity, a non-primary checkout, no unpreserved changes, and an exact recovery reference.
+Workfree creates the recovery reference in the surviving local repository before recording removal intent.
+Modified, staged, and untracked files block cleanup.
+Ignored files block cleanup unless an explicit policy names their generated path as disposable.
+Tracked contents, aliases, and paths outside the checkout cannot qualify as disposable output.
+Git operations in progress also block cleanup.
 
 The allocation identity is not merely a path or branch name.
 A replacement checkout at the same path must not satisfy an old removal request.
@@ -61,6 +69,13 @@ Ambiguous opens, failed metadata registration, and missing close events retain o
 Reconcile those records explicitly after checking the actual workspace state.
 Do not expire them on a timer.
 
+The Pi adapter evaluates recorded permissions at session startup and every 60 seconds.
+Owner release events also evaluate cleanup.
+A grace period delays eligible policy cleanup.
+New acquisition resets the grace period under the same registry lock as removal.
+A timer never grants permission or expires ownership.
+Shell-only integrations must arrange their own `wf sweep` schedule.
+
 The Pi adapter exposes explicit ownership operations.
 It does not reinterpret session shutdown, agent settlement, or topic changes as task completion.
 It does not automatically wrap third-party subagent dispatch.
@@ -75,6 +90,10 @@ It does not make independent mutable build outputs safe to share.
 
 Copy-on-write saves initial file storage, not every later build output or installed dependency.
 Do not equate logical directory size with reclaimed physical storage.
+Cleanup reports estimated private bytes, not a measured change in filesystem free space.
+Restoring a checkout does not erase earlier removal history.
+Recovery references do not expire automatically.
+A local recovery reference does not protect against loss of the repository or disk.
 
 ## Worktree provider
 
