@@ -51,6 +51,7 @@ It never deletes branches automatically, discards dirty files, or commits work t
 ## Persistence and failure
 
 The registry serializes ownership changes and removal.
+The first saved conversation claim advances the registry format from version 1 to 2 in the same SQLite transaction as the claim, while holding the registry lock. New binaries read both versions; pre-claim binaries reject version 2 before cleanup or owner mutation. The format never downgrades after claims are pruned. Activation therefore requires updated CLI and adapter code; older loaded sessions stop safely and must reload before operating. Merely updating package source does not cover already-open assignments.
 A client cannot acquire a checkout while deletion is in progress.
 State records removal intent before the filesystem operation.
 Recovery must inspect the actual directory and Git registration before it records completion.

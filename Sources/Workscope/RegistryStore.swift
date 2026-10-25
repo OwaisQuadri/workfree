@@ -31,7 +31,8 @@ final class RegistryStore {
         try syncDirectory(directory)
       }
       try require(try strings("PRAGMA application_id") == ["1465074512"], "Unknown registry")
-      try require(try strings("PRAGMA user_version") == ["1"], "Unsupported registry version")
+      try require(
+        try [["1"], ["2"]].contains(strings("PRAGMA user_version")), "Unsupported registry version")
       try require(try strings("PRAGMA integrity_check") == ["ok"], "Corrupt registry")
       _ = try strings("SELECT token FROM owner_tokens LIMIT 1")
       _ = try strings("SELECT data FROM allocations LIMIT 1")
@@ -65,6 +66,9 @@ final class RegistryStore {
   func save(_ allocation: Allocation, isNew: Bool = false) throws {
     let data = String(decoding: try JSONEncoder().encode(allocation), as: UTF8.self)
     try transaction {
+      if !(allocation.conversationClaims ?? []).isEmpty {
+        try execute("PRAGMA user_version=2")
+      }
       for token in Array(allocation.owners.keys) + Array(allocation.retiredOwners.keys) {
         try execute(
           "INSERT OR IGNORE INTO owner_tokens (token, allocation_id) VALUES (?, ?)",
