@@ -107,6 +107,15 @@ test("recoverable policy requires confirmation and cannot grant itself permissio
   assert.deepEqual(approved.calls.at(-1), ["--json", "sweep"]);
 });
 
+test("multiple generated roots reach the CLI without changing single-path compatibility", async () => {
+  const f = await fixture(true);
+  await f.run({ action: "authorize-cleanup", id: "allocation", disposablePaths: [".build", "node_modules"] });
+  assert.deepEqual(f.calls, [[
+    "--json", "authorize-cleanup", "allocation", "--disposable-path", ".build", "--disposable-path", "node_modules",
+  ]]);
+  assert.throws(() => argumentsFor({ action: "sweep", disposablePaths: [".build"] }, "/repo"), /only/);
+});
+
 test("session startup evaluates saved policies and shutdown clears its sweep timer", async () => {
   const f = await fixture();
   await f.handlers.get("session_start")({}, f.ctx);

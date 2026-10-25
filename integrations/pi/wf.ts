@@ -21,6 +21,7 @@ export function argumentsFor(input: {
   since?: string;
   graceSeconds?: number;
   disposablePath?: string;
+  disposablePaths?: string[];
 }, cwd: string): string[] {
   const args: string[] = [input.action];
   if (input.action === "start") {
@@ -49,13 +50,14 @@ export function argumentsFor(input: {
     if (!Number.isInteger(input.status)) throw new Error("entry-exit requires an integer status");
     args.push("--status", String(input.status));
   }
-  if (input.graceSeconds !== undefined || input.disposablePath !== undefined) {
+  if (input.graceSeconds !== undefined || input.disposablePath !== undefined || input.disposablePaths !== undefined) {
     if (input.action !== "authorize-cleanup") throw new Error("Policy options apply only to authorize-cleanup");
     if (input.graceSeconds !== undefined) {
       if (!Number.isFinite(input.graceSeconds) || input.graceSeconds < 0 || input.graceSeconds > 86400) throw new Error("Invalid grace period");
       args.push("--grace-seconds", String(input.graceSeconds));
     }
     if (input.disposablePath !== undefined) args.push("--disposable-path", input.disposablePath);
+    for (const path of input.disposablePaths ?? []) args.push("--disposable-path", path);
   }
   return ["--json", ...args];
 }
@@ -152,6 +154,7 @@ export default async function wf(pi: ExtensionAPI) {
       since: Type.Optional(Type.String({ description: "Cleanup history window for status, such as 24h, 30d, 2w, or all. Default 30d." })),
       graceSeconds: Type.Optional(Type.Number({ description: "authorize-cleanup grace period, 0 to 86400 seconds; default 60." })),
       disposablePath: Type.Optional(Type.String({ description: "authorize-cleanup only: one explicit checkout-relative generated path. Never use for secrets or useful ignored files." })),
+      disposablePaths: Type.Optional(Type.Array(Type.String(), { description: "authorize-cleanup only: explicit checkout-relative generated paths. Every path requires operator approval; secrets and useful ignored files must remain protected." })),
     }, { additionalProperties: false }),
     executionMode: "sequential",
     async execute(_call, input, signal, _update, ctx) {
@@ -164,7 +167,7 @@ export default async function wf(pi: ExtensionAPI) {
       const args = argumentsFor(input, ctx.cwd);
       if (input.action === "authorize-cleanup") {
         if (!ctx.hasUI || !(await ctx.ui.confirm("Authorize recoverable cleanup?",
-          `Allocation: ${input.id}\nGrace: ${input.graceSeconds ?? 60} seconds\nDisposable generated path: ${input.disposablePath ?? "none"}\nAllow automatic eviction after active workspace, execution, and pin owners release. Task identity and an exact Git recovery reference survive. Unsaved files block removal.`))) {
+          `Allocation: ${input.id}\nGrace: ${input.graceSeconds ?? 60} seconds\nDisposable generated paths: ${[...(input.disposablePath === undefined ? [] : [input.disposablePath]), ...(input.disposablePaths ?? [])].join(", ") || "none"}\nAllow automatic eviction after active workspace, execution, and pin owners release. Task identity and an exact Git recovery reference survive. Unsaved files block removal.`))) {
           throw new Error("Recoverable cleanup was not authorized");
         }
       }

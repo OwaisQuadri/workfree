@@ -87,7 +87,7 @@ Restore recreates that commit on a fresh branch using the recorded provider. It 
 This protects against checkout removal, not loss of the surviving repository or disk.
 Recovery references have no automatic expiry.
 
-Use `--disposable-path <relative-path>` only for an explicitly disposable generated directory.
+Use `--disposable-path <relative-path>` only for an explicitly disposable generated directory. Repeat it for several approved generated roots, for example `--disposable-path .build --disposable-path node_modules`. The Pi tool also accepts a `disposablePaths` array; its existing single `disposablePath` input remains supported.
 The rule permits ignored output under that path, not tracked or untracked changes.
 Aliases, tracked contents, and paths outside the checkout fail validation.
 Inspect the last 32 cleanup attempts and recovery record with `wf inspect`.

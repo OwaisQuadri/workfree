@@ -22,7 +22,7 @@ let help = """
     close-scope ID --owner TOKEN
     entry-exit ID --owner TOKEN --status INTEGER
     recover ID
-    authorize-cleanup ID [--grace-seconds 60] [--disposable-path PATH]
+    authorize-cleanup ID [--grace-seconds 60] [--disposable-path PATH]...
     revoke-cleanup ID
     preview
     sweep
@@ -46,6 +46,7 @@ let help = """
 struct Arguments {
   var positional: [String] = []
   var options: [String: String] = [:]
+  var disposablePaths: [String] = []
   var isCowRequired = false
   var isCleanupAuthorized = false
   var isJSON = false
@@ -64,7 +65,7 @@ struct Arguments {
         break
       }
       if argument.hasPrefix("--") {
-        guard flags.insert(argument).inserted else {
+        guard flags.insert(argument).inserted || argument == "--disposable-path" else {
           throw WorkscopeError("Duplicate option: \(argument)")
         }
         switch argument {
@@ -83,6 +84,7 @@ struct Arguments {
             !arguments[index].utf8.contains(0)
           else { throw WorkscopeError("Missing value: \(argument)") }
           options[argument] = arguments[index]
+          if argument == "--disposable-path" { disposablePaths.append(arguments[index]) }
         default: throw WorkscopeError("Unknown option: \(argument)")
         }
       } else {
@@ -251,7 +253,7 @@ do {
         }
         allocation = try registry.authorizeCleanup(
           id, graceSeconds: grace,
-          disposablePaths: arguments.options["--disposable-path"].map { [$0] } ?? [])
+          disposablePaths: arguments.disposablePaths)
       case "revoke-cleanup": allocation = try registry.revokeCleanup(id)
       case "restore": allocation = try registry.restore(id)
       case "run":
