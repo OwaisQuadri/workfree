@@ -87,7 +87,9 @@ export default async function wf(pi: ExtensionAPI) {
       "--session-cwd", ctx.cwd, "--session-allocations", JSON.stringify(ids),
     ];
     const binary = await executable(signal);
-    const result = await pi.exec(binary, [...contextArgs, ...args], { signal });
+    const result = await pi.exec(binary, [...contextArgs, ...args], { signal }).catch((error: unknown) => ({
+      code: 1, killed: false, stdout: "", stderr: String(error),
+    }));
     let details: unknown;
     let failure: Error | undefined;
     try { details = JSON.parse(result.stdout); }

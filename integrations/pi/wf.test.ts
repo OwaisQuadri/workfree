@@ -19,6 +19,7 @@ async function fixture(isApproved = false) {
   const calls: string[][] = [];
   const rawCalls: string[][] = [];
   const entries: any[] = [];
+  const failures: Error[] = [];
   const executables: string[] = [];
   const result = { code: 0, killed: false, stdout: '{"id":"allocation"}', stderr: "" };
   const commands = new Map<string, any>();
@@ -37,14 +38,16 @@ async function fixture(isApproved = false) {
       on(name: string, handler: any) { handlers.set(name, handler); },
       appendEntry(customType: string, data: unknown) { entries.push({ type: "custom", customType, data }); },
       async exec(command: string, args: string[]) {
-        executables.push(command); rawCalls.push(args); calls.push(args.slice(8)); return result;
+        executables.push(command); rawCalls.push(args); calls.push(args.slice(8));
+        if (failures.length) throw failures.shift();
+        return result;
       },
     } as any);
   } finally {
     if (original === undefined) delete process.env.WF_BIN;
     else process.env.WF_BIN = original;
   }
-  return { calls, rawCalls, entries, executables, result, commands, handlers, ctx, run: (input: any) => tool.execute("call", input, undefined, undefined, ctx) };
+  return { calls, rawCalls, entries, failures, executables, result, commands, handlers, ctx, run: (input: any) => tool.execute("call", input, undefined, undefined, ctx) };
 }
 
 test("start defaults to no cleanup permission and passes arguments without shell interpolation", () => {
@@ -138,6 +141,17 @@ test("acquired allocations persist outside transcript text and rebind on reload"
   assert.equal(f.rawCalls[1][7], '["outside-cwd"]');
   assert.deepEqual(f.calls.slice(1), [["--json", "claim"], ["--json", "sweep"]]);
   await f.handlers.get("session_shutdown")({}, f.ctx);
+});
+
+test("interrupted structured commands reconcile acquired targets before reporting failure", async () => {
+  const f = await fixture();
+  f.failures.push(new Error("interrupted after acquisition"));
+  f.result.stdout = JSON.stringify([{
+    id: "acquired-before-error", conversationClaims: [{ sessionID: "conversation", processID: process.pid }],
+  }]);
+  await assert.rejects(f.run({ action: "inspect", id: "acquired-before-error" }), /interrupted after acquisition/);
+  assert.deepEqual(f.calls, [["--json", "inspect", "acquired-before-error"], ["--json", "claim"]]);
+  assert.deepEqual(f.entries.at(-1).data, ["acquired-before-error"]);
 });
 
 test("malformed non-transcript metadata blocks cleanup instead of dropping protection", async () => {
