@@ -37,8 +37,9 @@ public struct Allocation: Codable, Sendable {
   public let repository: String
   public let repositoryIdentity: String
   public let provider: WorktreeProvider
-  public let isCleanupAuthorized: Bool
+  public internal(set) var isCleanupAuthorized: Bool
   public internal(set) var defaultPinToken: String?
+  public internal(set) var defaultTaskToken: String?
   public internal(set) var isRemovalPending: Bool = false
   public internal(set) var admin: String?
   public internal(set) var phase: Phase
@@ -47,4 +48,43 @@ public struct Allocation: Codable, Sendable {
   public internal(set) var retiredOwners: [String: Owner]
   public internal(set) var removedAt: Date?
   public internal(set) var reclaimedBytes: Int64?
+  public internal(set) var cleanupPolicy: CleanupPolicy?
+  public internal(set) var eligibleSince: Date?
+  public internal(set) var recovery: RecoveryRecord?
+  public internal(set) var cleanupAttempts: [CleanupAttempt]?
+  public internal(set) var pastRemovals: [Reclamation]?
+}
+
+public struct Reclamation: Codable, Sendable {
+  public let date: Date
+  public let estimatedBytes: Int64
+}
+
+public struct CleanupPolicy: Codable, Sendable {
+  public let graceSeconds: TimeInterval
+  public let disposablePaths: [String]
+}
+
+public struct RecoveryRecord: Codable, Sendable {
+  public let commit: String
+  public let reference: String
+  public let branch: String?
+  public let preservedAt: Date
+  public let event: String
+}
+
+public struct CleanupAttempt: Codable, Sendable {
+  public let date: Date
+  public let event: String
+  public let reasons: [String]
+  public let phase: Phase
+}
+
+public struct CleanupPreview: Codable, Sendable {
+  public let id: String
+  public let reasons: [String]
+  public let eligibleAt: Date?
+  public let estimatedBytes: Int64
+
+  public var isEligible: Bool { reasons.isEmpty }
 }

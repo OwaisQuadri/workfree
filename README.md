@@ -1,6 +1,6 @@
 # Workfree
 
-Git worktrees with explicit owners. Opt-in cleanup frees a checkout after its last owner releases it and safety checks pass. The branch stays.
+Git worktrees with explicit owners and opt-in cleanup. Recoverable cleanup can evict an inactive checkout while its task stays unfinished. A Git reference preserves the exact commit.
 
 [![Check](https://github.com/OwaisQuadri/workfree/actions/workflows/check.yml/badge.svg)](https://github.com/OwaisQuadri/workfree/actions/workflows/check.yml)
 [License](LICENSE)
@@ -63,6 +63,36 @@ wf start feature/example --repo "$PWD" --allow-cleanup
 
 Use the returned allocation identifier with `wf inspect`, `wf keep`, or `wf finish`. Omitting `--allow-cleanup` keeps automatic cleanup disabled.
 
+## Recoverable cleanup
+
+Grant a policy to one verified managed allocation:
+
+```zsh
+wf authorize-cleanup <allocation> --grace-seconds 60
+wf preview
+wf sweep
+wf restore <allocation>
+wf revoke-cleanup <allocation>
+```
+
+The grant covers that allocation, including later restored checkouts. It does not grant permission for other allocations.
+Under this policy, task owners survive checkout removal. Workspace, execution, and pin owners still block removal.
+The first eligible event starts the grace period. Acquiring an owner resets it.
+Owner releases and later sweeps evaluate eligibility again.
+The Pi adapter asks for confirmation before a policy grant.
+A direct shell grant records the operator's instruction without a second prompt.
+
+Each removal preserves the exact commit under `refs/workfree/recovery/` in the surviving local repository.
+Restore recreates that commit on a fresh branch using the recorded provider. It refuses an occupied destination.
+This protects against checkout removal, not loss of the surviving repository or disk.
+Recovery references have no automatic expiry.
+
+Use `--disposable-path <relative-path>` only for an explicitly disposable generated directory.
+The rule permits ignored output under that path, not tracked or untracked changes.
+Aliases, tracked contents, and paths outside the checkout fail validation.
+Inspect the last 32 cleanup attempts and recovery record with `wf inspect`.
+Legacy `--allow-cleanup` allocations keep their final-owner contract until an explicit policy grant.
+
 ## Storage saved
 
 `wf status` shows what copy-on-write storage and cleanup save you:
@@ -70,7 +100,7 @@ Use the returned allocation identifier with `wf inspect`, `wf keep`, or `wf fini
 ```text
 Live worktrees: 3 · full checkouts would use 3.1 GB · actually using 2.0 GB · saved 1.1 GB
 Native checkouts: 1 use 684.6 MB. With simgit, they would use about 120.0 MB (estimate).
-Auto-cleanup, last 30 days: 1 worktree removed · 412.0 MB reclaimed
+Auto-cleanup, last 30 days: 1 worktree removed · 412.0 MB reclaimed (estimated private bytes)
 
 /path/to/repo  1.2 GB + 2.0 GB
   feature/a  5497abb5-a8e9-4f0d-b860-b7ae83eb7ca5  886.4 MB
@@ -104,11 +134,11 @@ Keep ordinary commits, fetches, pushes, and rebases in Git. Workfree manages che
 
 ## Safety boundaries
 
-Cleanup is disabled unless you permit it for a new allocation. Modified, staged, untracked, ignored, or uncertain checkout data blocks removal. Existing worktrees are not automatically adopted.
+Cleanup is disabled unless you permit it for an allocation. Modified, staged, untracked, or uncertain checkout data blocks removal. Ignored files also block removal unless an explicit policy names their generated path as disposable. Existing worktrees are not automatically adopted.
 
 Ownership is cooperative. Command exit does not prove that detached children have stopped. Execution owners remain until their scope is explicitly closed. Workfree does not detect or contain arbitrary processes using a checkout.
 
-There is no cleanup timer or daemon. Interrupted removal can be reconciled without granting new cleanup permission. Read the [safety contract](docs/safety.md) before integrating another host.
+The Pi adapter evaluates recorded cleanup permissions at session startup and every 60 seconds while the session runs. Shell-only users can schedule `wf sweep` with their existing scheduler. No daemon or scheduler is installed. Interrupted removal can be reconciled without granting new cleanup permission. Read the [safety contract](docs/safety.md) before integrating another host.
 
 ## Contribute or get help
 
