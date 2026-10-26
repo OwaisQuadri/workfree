@@ -9,6 +9,7 @@ let help = """
   Usage: \(productName) [--state-dir PATH] [--json] COMMAND
     start BRANCH --repo PATH [--allow-cleanup] [--base REF] [--path PATH]
       [--require-cow] [--provider git|simgit]
+    claim [ID]
     inspect ID
     list
     status [--since 30d|24h|2w|all]
@@ -21,7 +22,7 @@ let help = """
     close-scope ID --owner TOKEN
     entry-exit ID --owner TOKEN --status INTEGER
     recover ID
-    authorize-cleanup ID [--grace-seconds 60] [--disposable-path PATH]
+    authorize-cleanup ID [--grace-seconds 60] [--disposable-path PATH]...
     revoke-cleanup ID
     preview
     sweep
@@ -29,6 +30,11 @@ let help = """
     run ID [--owner TOKEN] -- COMMAND...
     --help
     --version
+
+  Conversation options: --session-id ID --session-pid PID
+    [--session-cwd PATH] [--session-allocations JSON_ARRAY]
+  Use the Pi host PID, never the short-lived wf subprocess PID.
+  claim binds explicit allocations and managed cwd before use; shutdown does not release claims.
 
   Uses simgit CoW if available, otherwise native Git. --require-cow refuses native Git.
   Selected-provider failures never switch providers.
@@ -40,6 +46,7 @@ let help = """
 struct Arguments {
   var positional: [String] = []
   var options: [String: String] = [:]
+  var disposablePaths: [String] = []
   var isCowRequired = false
   var isCleanupAuthorized = false
   var isJSON = false
@@ -58,7 +65,7 @@ struct Arguments {
         break
       }
       if argument.hasPrefix("--") {
-        guard flags.insert(argument).inserted else {
+        guard flags.insert(argument).inserted || argument == "--disposable-path" else {
           throw WorkscopeError("Duplicate option: \(argument)")
         }
         switch argument {
@@ -68,7 +75,8 @@ struct Arguments {
         case "--help": isHelp = true
         case "--version": isVersion = true
         case "--state-dir", "--repo", "--base", "--path", "--owner", "--kind", "--label",
-          "--status", "--provider", "--since", "--grace-seconds", "--disposable-path":
+          "--status", "--provider", "--since", "--grace-seconds", "--disposable-path",
+          "--session-id", "--session-pid", "--session-cwd", "--session-allocations":
           index += 1
           guard index < arguments.count,
             argument == "--label"
@@ -76,6 +84,7 @@ struct Arguments {
             !arguments[index].utf8.contains(0)
           else { throw WorkscopeError("Missing value: \(argument)") }
           options[argument] = arguments[index]
+          if argument == "--disposable-path" { disposablePaths.append(arguments[index]) }
         default: throw WorkscopeError("Unknown option: \(argument)")
         }
       } else {
@@ -98,16 +107,25 @@ struct Arguments {
       allowed = []
     case "authorize-cleanup": allowed = ["--grace-seconds", "--disposable-path"]
     case "status": allowed = ["--since"]
-    case "measure": allowed = []
+    case "measure", "claim": allowed = []
     default: throw WorkscopeError("Unknown command: \(action)")
     }
-    guard flags.subtracting(allowed.union(["--json", "--state-dir"])).isEmpty else {
+    guard
+      flags.subtracting(
+        allowed.union([
+          "--json", "--state-dir", "--session-id", "--session-pid", "--session-cwd",
+          "--session-allocations",
+        ])
+      ).isEmpty
+    else {
       throw WorkscopeError("Option not valid for \(action)")
     }
     let isCountValid =
-      action == "measure"
-      ? positional.count >= 2
-      : positional.count == (["list", "status", "preview", "sweep"].contains(action) ? 1 : 2)
+      action == "claim"
+      ? (1...2).contains(positional.count)
+      : action == "measure"
+        ? positional.count >= 2
+        : positional.count == (["list", "status", "preview", "sweep"].contains(action) ? 1 : 2)
     guard isCountValid else {
       throw WorkscopeError("Wrong number of arguments for \(action)")
     }
@@ -148,9 +166,33 @@ do {
   } else if arguments.isVersion {
     print("\(productName) \(version)")
   } else {
-    let registry = try Registry(stateDirectory: arguments.options["--state-dir"])
     let action = arguments.positional[0]
-    if action == "preview" {
+    let conversation: ConversationContext?
+    if let sessionID = arguments.options["--session-id"] {
+      guard let pid = Int32(try arguments.value("--session-pid")), pid > 0 else {
+        throw WorkscopeError("Invalid conversation host PID")
+      }
+      var ids =
+        try arguments.options["--session-allocations"].map {
+          try JSONDecoder().decode([String].self, from: Data($0.utf8))
+        } ?? []
+      if arguments.positional.count == 2 && !["start", "restore", "measure"].contains(action) {
+        ids.append(arguments.positional[1])
+      }
+      conversation = try ConversationContext(
+        sessionID: sessionID, processID: pid, allocationIDs: ids,
+        cwd: arguments.options["--session-cwd"])
+    } else {
+      guard !arguments.options.keys.contains(where: { $0.hasPrefix("--session-") }) else {
+        throw WorkscopeError("Conversation options require --session-id")
+      }
+      conversation = nil
+    }
+    let registry = try Registry(
+      stateDirectory: arguments.options["--state-dir"], conversation: conversation)
+    if action == "claim" {
+      try output(registry.claim(arguments.positional.dropFirst().first), isJSON: arguments.isJSON)
+    } else if action == "preview" {
       try output(CleanupPlan(registry.preview()), isJSON: arguments.isJSON)
     } else if action == "sweep" {
       try output(registry.sweep(), isJSON: arguments.isJSON)
@@ -167,7 +209,8 @@ do {
       }
     } else {
       let id = arguments.positional[1]
-      let isRemovedBefore = (try? registry.inspect(id))?.phase == .removed
+      let isRemovedBefore =
+        (try? Registry(stateDirectory: registry.stateDirectory).inspect(id))?.phase == .removed
       let allocation: Allocation
       switch action {
       case "start":
@@ -210,7 +253,7 @@ do {
         }
         allocation = try registry.authorizeCleanup(
           id, graceSeconds: grace,
-          disposablePaths: arguments.options["--disposable-path"].map { [$0] } ?? [])
+          disposablePaths: arguments.disposablePaths)
       case "revoke-cleanup": allocation = try registry.revokeCleanup(id)
       case "restore": allocation = try registry.restore(id)
       case "run":

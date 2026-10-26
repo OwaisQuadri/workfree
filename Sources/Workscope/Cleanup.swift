@@ -18,7 +18,7 @@ func recordAttempt(_ allocation: inout Allocation, event: String, reasons: [Stri
 }
 
 func ownershipReasons(_ allocation: Allocation) -> [String] {
-  var reasons: [String] = []
+  var reasons = conversationReasons(allocation)
   if !allocation.isCleanupAuthorized && allocation.cleanupPolicy == nil {
     reasons.append("Cleanup is not authorized")
   }
