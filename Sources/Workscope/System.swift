@@ -79,8 +79,7 @@ func git(_ path: String, _ args: [String]) throws -> String {
 func command(
   _ executable: String, _ args: [String], at directory: String? = nil,
   accepting exitCodes: Set<Int32> = [0]
-) throws -> String
-{
+) throws -> String {
   let process = Process()
   process.executableURL = URL(fileURLWithPath: executable)
   process.arguments = args

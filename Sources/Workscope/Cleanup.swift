@@ -70,6 +70,13 @@ func verifyFiles(_ allocation: Allocation) throws -> [String] {
   try require(
     !entries.split(separator: "\0").contains { $0.hasPrefix("160000 ") },
     "Submodule preservation is unproven")
+  let trackedStatus = try git(
+    allocation.path,
+    [
+      "status", "--porcelain=v1", "-z", "--untracked-files=no", "--ignored=no",
+      "--ignore-submodules=none",
+    ])
+  try require(trackedStatus.isEmpty, "Changed, staged, untracked, or ignored files remain")
   let targets = try disposableTargets(allocation)
   var statusPaths = ["."]
   for target in targets {

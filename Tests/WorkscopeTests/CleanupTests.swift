@@ -96,10 +96,43 @@ final class CleanupTests: XCTestCase {
     }
   }
 
+  func testStagedDeletionInsideApprovedIgnoredRootPreservesIndexAndFile() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.registry.start(
+      branch: "staged-deletion", repository: fixture.repository, provider: .git)
+    let relative = "ignored/valuable"
+    let path = allocation.path + "/" + relative
+    try FileManager.default.createDirectory(
+      atPath: allocation.path + "/ignored", withIntermediateDirectories: true)
+    try Data("preserve staged deletion contents".utf8).write(to: URL(fileURLWithPath: path))
+    _ = try git(allocation.path, ["add", "--force", "--", relative])
+    _ = try git(allocation.path, ["commit", "-m", "Track valuable ignored file"])
+    _ = try git(allocation.path, ["rm", "--cached", "--", relative])
+    let staged = try git(allocation.path, ["diff", "--cached", "--name-status"])
+    XCTAssertEqual(staged, "D\t" + relative)
+    _ = try fixture.registry.authorizeCleanup(
+      allocation.id, graceSeconds: 0, disposablePaths: ["ignored"])
+    _ = try fixture.registry.finish(allocation.id)
+    _ = try fixture.registry.sweep()
+    let blocked = try fixture.registry.inspect(allocation.id)
+    XCTAssertEqual(blocked.phase, .blocked)
+    XCTAssertTrue(blocked.reason?.contains("Changed, staged") == true)
+    XCTAssertFalse(blocked.isRemovalPending)
+    XCTAssertNil(blocked.recovery)
+    XCTAssertTrue(
+      try git(fixture.repository, ["for-each-ref", "refs/workfree/recovery/" + allocation.id])
+        .isEmpty)
+    XCTAssertEqual(try git(allocation.path, ["diff", "--cached", "--name-status"]), staged)
+    XCTAssertEqual(
+      try String(contentsOfFile: path, encoding: .utf8), "preserve staged deletion contents")
+  }
+
   func testApprovedIgnoredDirectoryDoesNotOverflowStatusOutput() throws {
     let fixture = try Fixture()
     let allocation = try fixture.start(isAuthorized: false)
-    let directory = "ignored/" + Array(repeating: String(repeating: "g", count: 90), count: 8)
+    let directory =
+      "ignored/"
+      + Array(repeating: String(repeating: "g", count: 90), count: 8)
       .joined(separator: "/")
     try FileManager.default.createDirectory(
       atPath: allocation.path + "/" + directory, withIntermediateDirectories: true)
