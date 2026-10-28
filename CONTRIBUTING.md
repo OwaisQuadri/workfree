@@ -33,7 +33,7 @@ Do not add ordinary code comments; use clear names and small functions.
 Promote warnings to errors.
 
 Do not weaken a blocked cleanup into deletion for convenience.
-New deletion authority requires an explicit user-facing grant and a negative test for missing permission.
+New deletion authority requires explicit operator setup or an allocation grant and a negative test for missing permission. Standing repository policy is creation-only authority, never a sweep-time backfill or model self-authorization. Cover generation provenance, atomic revocation rollback, pending removal, repository replacement, and monotonic registry versioning when changing it. Use a verified version-2 binary through `WORKFREE_V2_EXECUTABLE` for the old-reader rejection fixture; report a missing binary as a skipped compatibility check. Startup and timer cleanup must remain dialog-free under saved authority.
 Check path aliases, missing paths, retained Git registrations, and allocation replacement when changing identity checks.
 Check retries, concurrent ownership, and interrupted removal when changing persistence.
 

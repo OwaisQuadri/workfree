@@ -32,10 +32,14 @@ final class RegistryStore {
       }
       try require(try strings("PRAGMA application_id") == ["1465074512"], "Unknown registry")
       try require(
-        try [["1"], ["2"]].contains(strings("PRAGMA user_version")), "Unsupported registry version")
+        try [["1"], ["2"], ["3"]].contains(strings("PRAGMA user_version")),
+        "Unsupported registry version")
       try require(try strings("PRAGMA integrity_check") == ["ok"], "Corrupt registry")
       _ = try strings("SELECT token FROM owner_tokens LIMIT 1")
       _ = try strings("SELECT data FROM allocations LIMIT 1")
+      if try strings("PRAGMA user_version") == ["3"] {
+        _ = try strings("SELECT data FROM repository_cleanup_policies LIMIT 1")
+      }
     } catch {
       sqlite3_close(database)
       database = nil
@@ -64,29 +68,79 @@ final class RegistryStore {
   }
 
   func save(_ allocation: Allocation, isNew: Bool = false) throws {
-    let data = String(decoding: try JSONEncoder().encode(allocation), as: UTF8.self)
+    try transaction { try saveAllocation(allocation, isNew: isNew) }
+  }
+
+  func repositoryCleanupPolicy(_ identity: String) throws -> RepositoryCleanupPolicy? {
+    guard try strings("PRAGMA user_version") == ["3"] else { return nil }
+    guard
+      let data = try strings(
+        "SELECT data FROM repository_cleanup_policies WHERE repository_identity=?", [identity]
+      ).first
+    else { return nil }
+    let policy = try JSONDecoder().decode(RepositoryCleanupPolicy.self, from: Data(data.utf8))
+    try require(
+      policy.repositoryIdentity == identity && !policy.id.isEmpty,
+      "Repository policy identity mismatch")
+    return policy
+  }
+
+  func saveRepositoryCleanupPolicy(_ policy: RepositoryCleanupPolicy) throws {
+    let data = String(decoding: try JSONEncoder().encode(policy), as: UTF8.self)
     try transaction {
-      if !(allocation.conversationClaims ?? []).isEmpty {
-        try execute("PRAGMA user_version=2")
+      try execute("PRAGMA user_version=3")
+      try execute(
+        "CREATE TABLE IF NOT EXISTS repository_cleanup_policies (repository_identity TEXT PRIMARY KEY, data TEXT NOT NULL)"
+      )
+      try execute(
+        "INSERT INTO repository_cleanup_policies (repository_identity, data) VALUES (?, ?)",
+        [policy.repositoryIdentity, data])
+    }
+  }
+
+  func revokeRepositoryCleanupPolicy(_ identity: String) throws {
+    try transaction {
+      guard let policy = try repositoryCleanupPolicy(identity) else { return }
+      let derived = try allocations().filter { $0.cleanupPolicySourceID == policy.id }
+      try require(!derived.contains { $0.isRemovalPending }, "Derived removal is pending")
+      for var allocation in derived {
+        allocation.cleanupPolicy = nil
+        allocation.cleanupPolicySourceID = nil
+        allocation.eligibleSince = nil
+        recordAttempt(
+          &allocation, event: "repository-policy-revoke",
+          reasons: ["Repository cleanup policy revoked"])
+        try saveAllocation(allocation)
       }
-      for token in Array(allocation.owners.keys) + Array(allocation.retiredOwners.keys) {
-        try execute(
-          "INSERT OR IGNORE INTO owner_tokens (token, allocation_id) VALUES (?, ?)",
-          [token, allocation.id])
-        try require(
-          try strings("SELECT allocation_id FROM owner_tokens WHERE token=?", [token])
-            == [allocation.id], "Owner token belongs to another allocation")
-      }
-      if isNew {
-        try execute(
-          "INSERT INTO allocations (id, path, data) VALUES (?, ?, ?)",
-          [allocation.id, allocation.path, data])
-      } else {
-        try execute(
-          "UPDATE allocations SET data=? WHERE id=? AND path=?",
-          [data, allocation.id, allocation.path])
-        try require(sqlite3_changes(database) == 1, "Allocation identity changed")
-      }
+      try execute(
+        "DELETE FROM repository_cleanup_policies WHERE repository_identity=?", [identity])
+    }
+  }
+
+  private func saveAllocation(_ allocation: Allocation, isNew: Bool = false) throws {
+    let data = String(decoding: try JSONEncoder().encode(allocation), as: UTF8.self)
+    if !(allocation.conversationClaims ?? []).isEmpty,
+      try strings("PRAGMA user_version") == ["1"]
+    {
+      try execute("PRAGMA user_version=2")
+    }
+    for token in Array(allocation.owners.keys) + Array(allocation.retiredOwners.keys) {
+      try execute(
+        "INSERT OR IGNORE INTO owner_tokens (token, allocation_id) VALUES (?, ?)",
+        [token, allocation.id])
+      try require(
+        try strings("SELECT allocation_id FROM owner_tokens WHERE token=?", [token])
+          == [allocation.id], "Owner token belongs to another allocation")
+    }
+    if isNew {
+      try execute(
+        "INSERT INTO allocations (id, path, data) VALUES (?, ?, ?)",
+        [allocation.id, allocation.path, data])
+    } else {
+      try execute(
+        "UPDATE allocations SET data=? WHERE id=? AND path=?",
+        [data, allocation.id, allocation.path])
+      try require(sqlite3_changes(database) == 1, "Allocation identity changed")
     }
   }
 

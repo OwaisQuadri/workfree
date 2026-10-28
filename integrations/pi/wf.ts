@@ -23,11 +23,15 @@ export function argumentsFor(input: {
   disposablePath?: string;
   disposablePaths?: string[];
 }, cwd: string): string[] {
+  if (input.action === "authorize-cleanup") {
+    throw new Error("New cleanup authority requires operator setup: wf cleanup-policy enable --repo PATH for future allocations, or wf authorize-cleanup ID for an existing allocation. The model cannot grant permission.");
+  }
+  if (input.isCleanupAllowed && input.action !== "start") throw new Error("Cleanup permission applies only to start");
   const args: string[] = [input.action];
   if (input.action === "start") {
     if (!input.branch) throw new Error("start requires a branch");
     args.push(input.branch, "--repo", input.repo ?? cwd);
-    if (input.isCleanupAllowed) args.push("--allow-cleanup");
+    if (input.isCleanupAllowed) args.push("--require-cleanup-policy");
     if (input.isCopyOnWriteRequired) args.push("--require-cow");
   } else if (!["list", "status", "preview", "sweep"].includes(input.action)) {
     if (!input.id) throw new Error(`${input.action} requires an allocation id`);
@@ -51,13 +55,7 @@ export function argumentsFor(input: {
     args.push("--status", String(input.status));
   }
   if (input.graceSeconds !== undefined || input.disposablePath !== undefined || input.disposablePaths !== undefined) {
-    if (input.action !== "authorize-cleanup") throw new Error("Policy options apply only to authorize-cleanup");
-    if (input.graceSeconds !== undefined) {
-      if (!Number.isFinite(input.graceSeconds) || input.graceSeconds < 0 || input.graceSeconds > 86400) throw new Error("Invalid grace period");
-      args.push("--grace-seconds", String(input.graceSeconds));
-    }
-    if (input.disposablePath !== undefined) args.push("--disposable-path", input.disposablePath);
-    for (const path of input.disposablePaths ?? []) args.push("--disposable-path", path);
+    throw new Error("Policy options require an explicit operator CLI grant with wf authorize-cleanup ID; they cannot create model authority.");
   }
   return ["--json", ...args];
 }
@@ -139,7 +137,7 @@ export default async function wf(pi: ExtensionAPI) {
   pi.registerTool({
     name: "wf",
     label: "Workfree",
-    description: "Claim allocations before raw shell use or child dispatch. Structured operations acquire durable conversation protection automatically. Shutdown and idle do not release it. Arbitrary transcript paths are not inferred. Manage task identity, active checkout users, and recoverable cleanup. authorize-cleanup requires operator confirmation. Under that policy, task owners survive eviction; workspace, execution, and pin owners block it. Never infer scope closure from command exit. preview is read-only; sweep evaluates recorded permissions; restore recreates the preserved commit.",
+    description: "Claim allocations before raw shell use or child dispatch. Structured operations acquire durable conversation protection automatically. Shutdown and idle do not release it. Arbitrary transcript paths are not inferred. Manage task identity, active checkout users, and recoverable cleanup. Normal start inherits saved repository cleanup authority without a dialog. Without it, start retains an unauthorized checkout. New authority requires operator CLI setup with wf cleanup-policy enable --repo PATH; authorize-cleanup cannot grant model authority. Under that policy, task owners survive eviction; workspace, execution, and pin owners block it. Never infer scope closure from command exit. preview is read-only; sweep evaluates recorded permissions; restore recreates the preserved commit.",
     parameters: Type.Object({
       action: Type.Union(actions.map((action) => Type.Literal(action))),
       id: Type.Optional(Type.String()),
@@ -149,28 +147,16 @@ export default async function wf(pi: ExtensionAPI) {
       kind: Type.Optional(Type.Union([Type.Literal("task"), Type.Literal("workspace"), Type.Literal("execution"), Type.Literal("pin")])),
       label: Type.Optional(Type.String()),
       status: Type.Optional(Type.Integer()),
-      isCleanupAllowed: Type.Optional(Type.Boolean({ description: "Request affirmative operator permission for automatic cleanup of this new allocation. Never assume permission." })),
+      isCleanupAllowed: Type.Optional(Type.Boolean({ description: "Require already-recorded standing repository cleanup authority for start. This cannot grant permission. Normal start inherits saved policy without this flag." })),
       isCopyOnWriteRequired: Type.Optional(Type.Boolean({ description: "Require the optional simgit copy-on-write provider for this new allocation." })),
       since: Type.Optional(Type.String({ description: "Cleanup history window for status, such as 24h, 30d, 2w, or all. Default 30d." })),
-      graceSeconds: Type.Optional(Type.Number({ description: "authorize-cleanup grace period, 0 to 86400 seconds; default 60." })),
-      disposablePath: Type.Optional(Type.String({ description: "authorize-cleanup only: one explicit checkout-relative generated path. Never use for secrets or useful ignored files." })),
-      disposablePaths: Type.Optional(Type.Array(Type.String(), { description: "authorize-cleanup only: explicit checkout-relative generated paths. Every path requires operator approval; secrets and useful ignored files must remain protected." })),
+      graceSeconds: Type.Optional(Type.Number({ description: "Operator CLI grant only. The model cannot set cleanup policy." })),
+      disposablePath: Type.Optional(Type.String({ description: "Operator CLI grant only. The model cannot approve disposable paths." })),
+      disposablePaths: Type.Optional(Type.Array(Type.String(), { description: "Operator CLI grant only. Standing repository policy never grants disposable paths." })),
     }, { additionalProperties: false }),
     executionMode: "sequential",
     async execute(_call, input, signal, _update, ctx) {
-      if (input.isCleanupAllowed) {
-        if (input.action !== "start") throw new Error("Cleanup permission applies only to start");
-        if (!ctx.hasUI || !(await ctx.ui.confirm("Allow automatic cleanup?", "Remove this managed checkout only after its final owner releases it and all safety checks pass."))) {
-          throw new Error("Automatic cleanup was not authorized");
-        }
-      }
       const args = argumentsFor(input, ctx.cwd);
-      if (input.action === "authorize-cleanup") {
-        if (!ctx.hasUI || !(await ctx.ui.confirm("Authorize recoverable cleanup?",
-          `Allocation: ${input.id}\nGrace: ${input.graceSeconds ?? 60} seconds\nDisposable generated paths: ${[...(input.disposablePath === undefined ? [] : [input.disposablePath]), ...(input.disposablePaths ?? [])].join(", ") || "none"}\nAllow automatic eviction after active workspace, execution, and pin owners release. Task identity and an exact Git recovery reference survive. Unsaved files block removal.`))) {
-          throw new Error("Recoverable cleanup was not authorized");
-        }
-      }
       const { result, details } = await execute(ctx, args, signal);
       return { content: [{ type: "text", text: result.stdout }], details };
     },

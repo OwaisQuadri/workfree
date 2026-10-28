@@ -33,10 +33,10 @@ herdr plugin link "$HOME/.local/share/workfree/herdr" --enabled
 Run creation from an existing Herdr pane:
 
 ```zsh
-wf-herdr-open feature/example --repo "$PWD" --allow-cleanup
+wf-herdr-open feature/example --repo "$PWD"
 ```
 
-Omit `--allow-cleanup` when the checkout must remain after its owners release it.
+Creation inherits any saved operator repository cleanup policy without a per-allocation dialog. Enable future-only inheritance with `wf cleanup-policy enable --repo "$PWD"`; inspect or revoke it with `show` or `revoke` in place of `enable`. Standing policy grants no disposable paths. Without saved authority, creation remains unauthorized unless the operator supplies the legacy `--allow-cleanup` flag. To retain one allocation regardless of standing policy, pin it or explicitly revoke its allocation grant. Repository revocation clears derived grants but preserves independent explicit grants and all owners. See [recoverable cleanup](../README.md#recoverable-cleanup).
 This creates a new allocation; it does not adopt existing worktrees.
 
 Reopen a registered allocation after Close for now with its existing ID:

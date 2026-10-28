@@ -55,17 +55,37 @@ cd workfree
 
 Both routes run the same installer. It refuses existing installation targets. Activation is separate. See [Herdr setup](docs/herdr.md).
 
-From a repository, create a new task with cleanup enabled:
+From a repository, create a new task:
 
 ```zsh
-wf start feature/example --repo "$PWD" --allow-cleanup
+wf start feature/example --repo "$PWD"
 ```
 
-Use the returned allocation identifier with `wf inspect`, `wf keep`, or `wf finish`. Omitting `--allow-cleanup` keeps automatic cleanup disabled.
+Use the returned allocation identifier with `wf inspect`, `wf keep`, or `wf finish`. New tasks inherit saved repository authority if enabled below. Without that authority, cleanup stays disabled unless the operator explicitly grants it. The legacy shell-only `--allow-cleanup` flag remains available for final-owner cleanup.
 
 ## Recoverable cleanup
 
-Grant a policy to one verified managed allocation:
+Enable dialog-free automatic cleanup for future allocations in one repository:
+
+```zsh
+wf cleanup-policy show --repo "$PWD"
+wf cleanup-policy enable --repo "$PWD"
+wf start feature/example --repo "$PWD"
+```
+
+This operator setup records authority in the private registry for the repository's canonical Git common directory, device, and inode. Only new allocations inherit it. Existing allocations, including previously declined or revoked ones, do not enroll. Repository replacement at the same path does not inherit it. There is no global default.
+
+Normal Pi starts inherit the saved policy without a dialog. Without a policy, normal starts remain valid but unauthorized for cleanup. The default grace period is 60 seconds. Standing policy grants no disposable paths, so ignored files remain protected.
+
+Revoke repository authority with:
+
+```zsh
+wf cleanup-policy revoke --repo "$PWD"
+```
+
+Revocation atomically stops future inheritance and clears derived allocation grants and their grace periods. Independent explicit allocation grants, owners, and recovery records survive. Pending derived removal blocks revocation without partial changes. Re-enabling creates a new generation and never re-enrolls old allocations. Repeating enable with the same grace period keeps the current generation; revoke before changing it.
+
+Grant a policy directly to one verified managed allocation:
 
 ```zsh
 wf authorize-cleanup <allocation> --grace-seconds 60
@@ -79,19 +99,20 @@ The grant covers that allocation, including later restored checkouts. It does no
 Under this policy, task owners survive checkout removal. Workspace, execution, and pin owners still block removal, as do live or uncertain conversation claims.
 The first eligible event starts the grace period. Acquiring an owner resets it.
 Owner releases and later sweeps evaluate eligibility again.
-The Pi adapter asks for confirmation before a policy grant.
-A direct shell grant records the operator's instruction without a second prompt.
+New authority requires an explicit operator CLI setup or allocation grant. The model-facing tool cannot grant permission and returns concrete setup instructions instead of asking for confirmation. Direct shell grants record the operator's instruction without a second prompt. Explicit allocation grants replace inherited provenance; allocation revocation never re-enrolls under a standing policy.
 
 Each removal preserves the exact commit under `refs/workfree/recovery/` in the surviving local repository.
 Restore recreates that commit on a fresh branch using the recorded provider. It refuses an occupied destination.
 This protects against checkout removal, not loss of the surviving repository or disk.
 Recovery references have no automatic expiry.
 
-Use `--disposable-path <relative-path>` only for an explicitly disposable generated directory. Repeat it for several approved generated roots, for example `--disposable-path .build --disposable-path node_modules`. The Pi tool also accepts a `disposablePaths` array; its existing single `disposablePath` input remains supported.
+Use `--disposable-path <relative-path>` only for an explicitly disposable generated directory. Repeat it for several approved generated roots, for example `--disposable-path .build --disposable-path node_modules`. Disposable paths require a direct operator allocation grant, not a model request or standing repository policy.
 The rule permits ignored output under that path, not tracked or untracked changes.
 Aliases, tracked contents, and paths outside the checkout fail validation.
 Inspect the last 32 cleanup attempts and recovery record with `wf inspect`.
-Legacy `--allow-cleanup` allocations keep their final-owner contract until an explicit policy grant.
+Legacy `--allow-cleanup` allocations keep their final-owner contract until an explicit policy grant. Standing policy uses recoverable cleanup, not that legacy flag. The model's legacy `isCleanupAllowed` input now only requires an existing standing policy; it cannot create permission.
+
+The first standing policy advances the registry format to version 3, even after revocation. Older binaries fail closed and must be updated. Update and reload Pi and any shell or workspace integrations before enabling policy. Source edits alone do not change an already loaded runtime. See [Pi runtime updates](docs/pi.md#update).
 
 ## Storage saved
 
@@ -134,7 +155,7 @@ Keep ordinary commits, fetches, pushes, and rebases in Git. Workfree manages che
 
 ## Safety boundaries
 
-Cleanup is disabled unless you permit it for an allocation. Modified, staged, untracked, or uncertain checkout data blocks removal. Ignored files also block removal unless an explicit policy names their generated path as disposable. Existing worktrees are not automatically adopted.
+Cleanup is disabled unless you explicitly grant allocation permission or a new allocation inherits recorded operator repository authority. Modified, staged, untracked, or uncertain checkout data blocks removal. Ignored files also block removal unless an explicit policy names their generated path as disposable. Existing worktrees are not automatically adopted.
 
 Ownership is cooperative. Command exit does not prove that detached children have stopped. Execution owners remain until their scope is explicitly closed. Workfree does not detect or contain arbitrary processes using a checkout.
 
