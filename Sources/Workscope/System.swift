@@ -76,8 +76,10 @@ func git(_ path: String, _ args: [String]) throws -> String {
   try command("/usr/bin/git", ["-C", path] + args).trimmingCharacters(in: .newlines)
 }
 
-func command(_ executable: String, _ args: [String], at directory: String? = nil) throws
-  -> String
+func command(
+  _ executable: String, _ args: [String], at directory: String? = nil,
+  accepting exitCodes: Set<Int32> = [0]
+) throws -> String
 {
   let process = Process()
   process.executableURL = URL(fileURLWithPath: executable)
@@ -103,7 +105,7 @@ func command(_ executable: String, _ args: [String], at directory: String? = nil
   let data = try output.read(upToCount: 4_194_305) ?? Data()
   let errorData = try errors.read(upToCount: 16_384) ?? Data()
   try require(
-    process.terminationReason == .exit && process.terminationStatus == 0,
+    process.terminationReason == .exit && exitCodes.contains(process.terminationStatus),
     "Command failed: \(executable) \(args.joined(separator: " "))\n"
       + String(decoding: errorData, as: UTF8.self))
   try require(data.count <= 4_194_304, "Command output exceeds safety limit")

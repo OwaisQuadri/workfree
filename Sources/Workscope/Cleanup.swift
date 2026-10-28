@@ -71,12 +71,20 @@ func verifyFiles(_ allocation: Allocation) throws -> [String] {
     !entries.split(separator: "\0").contains { $0.hasPrefix("160000 ") },
     "Submodule preservation is unproven")
   let targets = try disposableTargets(allocation)
+  var statusPaths = ["."]
+  for target in targets {
+    let relative = String(target.dropFirst(allocation.path.count + 1))
+    let ignored = try command(
+      "/usr/bin/git", ["-C", allocation.path, "check-ignore", "--no-index", "--", relative],
+      accepting: [0, 1])
+    if !ignored.isEmpty { statusPaths.append(":(exclude,literal)" + relative) }
+  }
   let status = try git(
     allocation.path,
     [
       "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored",
-      "--ignore-submodules=none",
-    ])
+      "--ignore-submodules=none", "--",
+    ] + statusPaths)
   for entry in status.split(separator: "\0") {
     let text = String(entry)
     guard text.hasPrefix("!! ") else {

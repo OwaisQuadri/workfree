@@ -96,6 +96,42 @@ final class CleanupTests: XCTestCase {
     }
   }
 
+  func testApprovedIgnoredDirectoryDoesNotOverflowStatusOutput() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.start(isAuthorized: false)
+    let directory = "ignored/" + Array(repeating: String(repeating: "g", count: 90), count: 8)
+      .joined(separator: "/")
+    try FileManager.default.createDirectory(
+      atPath: allocation.path + "/" + directory, withIntermediateDirectories: true)
+    for index in 0..<6000 {
+      try Data().write(to: URL(fileURLWithPath: allocation.path + "/" + directory + "/\(index)"))
+    }
+    _ = try fixture.registry.authorizeCleanup(
+      allocation.id, graceSeconds: 0, disposablePaths: ["ignored"])
+    _ = try fixture.registry.sweep()
+    let result = try fixture.registry.inspect(allocation.id)
+    XCTAssertEqual(result.phase, .removed, result.reason ?? "")
+    XCTAssertNotNil(result.recovery)
+  }
+
+  func testDisposableParentCannotHideUnignoredFiles() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.start(isAuthorized: false)
+    try Data("ignored/\nmixed/generated\n".utf8).write(
+      to: URL(fileURLWithPath: allocation.path + "/.gitignore"))
+    _ = try git(allocation.path, ["commit", "-am", "Ignore generated output"])
+    try FileManager.default.createDirectory(
+      atPath: allocation.path + "/mixed", withIntermediateDirectories: true)
+    for name in ["generated", "notes"] {
+      try Data("preserve".utf8).write(to: URL(fileURLWithPath: allocation.path + "/mixed/" + name))
+    }
+    _ = try fixture.registry.authorizeCleanup(
+      allocation.id, graceSeconds: 0, disposablePaths: ["mixed"])
+    _ = try fixture.registry.sweep()
+    XCTAssertNotEqual(try fixture.registry.inspect(allocation.id).phase, .removed)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: allocation.path + "/mixed/notes"))
+  }
+
   func testChangedRecoveryReferenceAndOccupiedRestoreDestinationFailClosed() throws {
     let fixture = try Fixture()
     let allocation = try fixture.start(isAuthorized: false)
