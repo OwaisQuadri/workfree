@@ -24,9 +24,13 @@ Durable conversation claims are separate from all legacy owners. They identify a
 
 ## Removal
 
-Automatic cleanup requires an affirmative grant for that allocation.
-The default is no grant.
+Automatic cleanup requires an explicit allocation grant or creation-time inheritance from an operator-enabled repository policy.
+The default is no grant. Only subsequent allocations inherit standing authority, scoped by the canonical Git common directory, device, and inode. Existing, declined, revoked, and restored allocations never auto-enroll. A replaced repository at the same path does not inherit authority. No global policy exists.
 Existing worktrees remain unmanaged.
+
+`wf cleanup-policy show|enable|revoke --repo PATH` is operator setup, not a model tool action. Standing policy defaults to 60 seconds of grace and grants no disposable paths. Normal Pi start under saved authority needs no dialog. Without it, normal start is retained without cleanup authority. Model requests for new authority fail with operator CLI instructions, never synthesized consent.
+
+Repository revocation atomically removes the standing grant and all derived allocation grants and eligibility. Independent explicit grants, owners, and recovery records remain. Any pending derived removal blocks the entire revocation. Explicit allocation grants clear inherited provenance; allocation revocation clears both forms of authority. A new policy generation applies only to future creations. Sweep, restore, and reload never re-enroll an allocation.
 
 Legacy cleanup requires zero owners.
 An explicit recoverable policy lets task owners survive eviction.
@@ -51,7 +55,7 @@ It never deletes branches automatically, discards dirty files, or commits work t
 ## Persistence and failure
 
 The registry serializes ownership changes and removal.
-The first saved conversation claim advances the registry format from version 1 to 2 in the same SQLite transaction as the claim, while holding the registry lock. New binaries read both versions; pre-claim binaries reject version 2 before cleanup or owner mutation. The format never downgrades after claims are pruned. Activation therefore requires updated CLI and adapter code; older loaded sessions stop safely and must reload before operating. Merely updating package source does not cover already-open assignments.
+The first saved conversation claim advances registry format 1 to 2 in the same SQLite transaction as the claim, while holding the registry lock. The first standing repository policy advances it to 3 atomically with policy persistence, before any allocation can inherit authority. New binaries read all three versions without granting authority to old records. Pre-claim binaries reject version 2; version-2 binaries reject version 3 before cleanup or owner mutation. Conversation saves, claim pruning, and policy revocation never downgrade the format. Activation requires updated CLI and adapter code; older loaded sessions stop safely and must reload before operating. Merely updating package source does not cover already-open assignments.
 A client cannot acquire a checkout while deletion is in progress.
 State records removal intent before the filesystem operation.
 Recovery must inspect the actual directory and Git registration before it records completion.

@@ -21,13 +21,14 @@ async function fixture(isApproved = false) {
   const entries: any[] = [];
   const failures: Error[] = [];
   const executables: string[] = [];
+  const confirmations: string[] = [];
   const result = { code: 0, killed: false, stdout: '{"id":"allocation"}', stderr: "" };
   const commands = new Map<string, any>();
   const handlers = new Map<string, any>();
   const ctx = {
     cwd: "/repo", hasUI: true,
     sessionManager: { getSessionId: () => "conversation", getEntries: () => entries },
-    ui: { confirm: async () => isApproved, notify: () => undefined },
+    ui: { confirm: async (title: string) => { confirmations.push(title); return isApproved; }, notify: () => undefined },
   };
   const original = process.env.WF_BIN;
   process.env.WF_BIN = "/fixture/wf";
@@ -47,7 +48,7 @@ async function fixture(isApproved = false) {
     if (original === undefined) delete process.env.WF_BIN;
     else process.env.WF_BIN = original;
   }
-  return { calls, rawCalls, entries, failures, executables, result, commands, handlers, ctx, run: (input: any) => tool.execute("call", input, undefined, undefined, ctx) };
+  return { calls, rawCalls, entries, failures, executables, confirmations, result, commands, handlers, ctx, tool, run: (input: any) => tool.execute("call", input, undefined, undefined, ctx) };
 }
 
 test("start defaults to no cleanup permission and passes arguments without shell interpolation", () => {
@@ -55,16 +56,32 @@ test("start defaults to no cleanup permission and passes arguments without shell
   assert.ok(argumentsFor({ action: "start", branch: "feature/a", isCopyOnWriteRequired: true }, "/repo").includes("--require-cow"));
 });
 
-test("automatic cleanup permission requires affirmative operator confirmation", async () => {
-  const denied = await fixture();
-  await assert.rejects(denied.run({ action: "start", branch: "feature/a", isCleanupAllowed: true }), /not authorized/);
-  assert.deepEqual(denied.calls, []);
-  const approved = await fixture(true);
-  await approved.run({ action: "start", branch: "feature/a", isCleanupAllowed: true });
-  assert.ok(approved.calls[0].includes("--allow-cleanup"));
-  approved.ctx.hasUI = false;
-  await assert.rejects(approved.run({ action: "start", branch: "feature/b", isCleanupAllowed: true }), /not authorized/);
-  assert.equal(approved.calls.length, 1);
+test("normal inherited start and required-policy start never prompt or grant legacy authority", async () => {
+  const f = await fixture();
+  f.ctx.hasUI = false;
+  f.result.stdout = JSON.stringify({ id: "allocation", cleanupPolicy: { graceSeconds: 60, disposablePaths: [] }, cleanupPolicySourceID: "saved-generation" });
+  const started = await f.run({ action: "start", branch: "feature/a" });
+  assert.equal(started.details.cleanupPolicySourceID, "saved-generation");
+  await f.run({ action: "start", branch: "feature/b", isCleanupAllowed: true });
+  assert.deepEqual(f.calls, [
+    ["--json", "start", "feature/a", "--repo", "/repo"],
+    ["--json", "start", "feature/b", "--repo", "/repo", "--require-cleanup-policy"],
+  ]);
+  assert.deepEqual(f.confirmations, []);
+  assert.ok(f.calls.every((args) => !args.includes("--allow-cleanup")));
+  assert.ok(!JSON.stringify(f.tool.parameters.properties.action).includes("cleanup-policy"));
+});
+
+test("missing saved authority fails closed with setup guidance instead of retrying a grant or dialog", async () => {
+  const f = await fixture(true);
+  f.result.code = 1;
+  f.result.stderr = "No standing cleanup authority. Operator setup: wf cleanup-policy enable --repo PATH";
+  await assert.rejects(f.run({ action: "start", branch: "feature/a", isCleanupAllowed: true }), /wf cleanup-policy enable/);
+  assert.deepEqual(f.calls, [
+    ["--json", "start", "feature/a", "--repo", "/repo", "--require-cleanup-policy"],
+    ["--json", "claim"],
+  ]);
+  assert.deepEqual(f.confirmations, []);
 });
 
 test("finish, workspace release, and execution closure remain separate operations", async () => {
@@ -94,37 +111,44 @@ test("malformed task and owner operations fail before invoking the executable", 
   assert.throws(() => argumentsFor({ action: "entry-exit", id: "allocation", owner: "execution", status: 1.5 }, "/repo"), /integer/);
 });
 
-test("recoverable policy requires confirmation and cannot grant itself permission through a sweep", async () => {
-  const denied = await fixture();
-  await assert.rejects(denied.run({ action: "authorize-cleanup", id: "allocation" }), /not authorized/);
-  assert.deepEqual(denied.calls, []);
-  const approved = await fixture(true);
-  await approved.run({ action: "authorize-cleanup", id: "allocation", graceSeconds: 120, disposablePath: ".build" });
-  assert.deepEqual(approved.calls, [["--json", "authorize-cleanup", "allocation", "--grace-seconds", "120", "--disposable-path", ".build"]]);
-  approved.ctx.hasUI = false;
-  await assert.rejects(approved.run({ action: "authorize-cleanup", id: "allocation" }), /not authorized/);
-  await approved.run({ action: "sweep" });
-  assert.deepEqual(approved.calls.at(-1), ["--json", "sweep"]);
+test("model grant requests fail with operator setup guidance regardless of UI approval", async () => {
+  for (const isApproved of [false, true]) {
+    const f = await fixture(isApproved);
+    for (const isUIAvailable of [false, true]) {
+      f.ctx.hasUI = isUIAvailable;
+      await assert.rejects(f.run({ action: "authorize-cleanup", id: "allocation", graceSeconds: 120, disposablePaths: [".build", "node_modules"] }), /operator setup: wf cleanup-policy enable.*wf authorize-cleanup ID/);
+    }
+    assert.deepEqual(f.calls, []);
+    assert.deepEqual(f.confirmations, []);
+    await f.run({ action: "sweep" });
+    assert.deepEqual(f.calls, [["--json", "sweep"]]);
+  }
+  assert.throws(() => argumentsFor({ action: "sweep", disposablePaths: [".build"] }, "/repo"), /operator CLI grant/);
 });
 
-test("multiple generated roots reach the CLI without changing single-path compatibility", async () => {
-  const f = await fixture(true);
-  await f.run({ action: "authorize-cleanup", id: "allocation", disposablePaths: [".build", "node_modules"] });
-  assert.deepEqual(f.calls, [[
-    "--json", "authorize-cleanup", "allocation", "--disposable-path", ".build", "--disposable-path", "node_modules",
-  ]]);
-  assert.throws(() => argumentsFor({ action: "sweep", disposablePaths: [".build"] }, "/repo"), /only/);
-});
-
-test("session startup evaluates saved policies and shutdown clears its sweep timer", async () => {
+test("session startup and timer evaluate saved policies without prompting or authorizing", async (t) => {
+  let tick: (() => Promise<void>) | undefined;
+  let isCleared = false;
+  t.mock.method(globalThis, "setInterval", (callback: () => Promise<void>, delay: number) => {
+    assert.equal(delay, 60_000);
+    tick = callback;
+    return { unref() {} } as any;
+  });
+  t.mock.method(globalThis, "clearInterval", () => { isCleared = true; });
   const f = await fixture();
+  f.ctx.hasUI = false;
   await f.handlers.get("session_start")({}, f.ctx);
   assert.deepEqual(f.calls, [["--json", "claim"], ["--json", "sweep"]]);
   assert.deepEqual(f.rawCalls[0].slice(0, 8), [
     "--session-id", "conversation", "--session-pid", String(process.pid),
     "--session-cwd", "/repo", "--session-allocations", "[]",
   ]);
+  await tick!();
+  assert.deepEqual(f.calls.at(-1), ["--json", "sweep"]);
+  assert.deepEqual(f.confirmations, []);
+  assert.ok(f.calls.every((args) => !args.some((arg) => ["authorize-cleanup", "cleanup-policy", "--allow-cleanup"].includes(arg))));
   await f.handlers.get("session_shutdown")({}, f.ctx);
+  assert.equal(isCleared, true);
 });
 
 test("startup never sweeps when conversation acquisition fails", async () => {

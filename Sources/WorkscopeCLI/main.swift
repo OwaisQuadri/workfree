@@ -8,7 +8,7 @@ let help = """
   Workfree \(version)
   Usage: \(productName) [--state-dir PATH] [--json] COMMAND
     start BRANCH --repo PATH [--allow-cleanup] [--base REF] [--path PATH]
-      [--require-cow] [--provider git|simgit]
+      [--require-cow] [--provider git|simgit] [--require-cleanup-policy]
     claim [ID]
     inspect ID
     list
@@ -22,6 +22,7 @@ let help = """
     close-scope ID --owner TOKEN
     entry-exit ID --owner TOKEN --status INTEGER
     recover ID
+    cleanup-policy show|enable|revoke --repo PATH [--grace-seconds 60]
     authorize-cleanup ID [--grace-seconds 60] [--disposable-path PATH]...
     revoke-cleanup ID
     preview
@@ -49,6 +50,7 @@ struct Arguments {
   var disposablePaths: [String] = []
   var isCowRequired = false
   var isCleanupAuthorized = false
+  var isCleanupPolicyRequired = false
   var isJSON = false
   var isHelp = false
   var isVersion = false
@@ -70,6 +72,7 @@ struct Arguments {
         }
         switch argument {
         case "--allow-cleanup": isCleanupAuthorized = true
+        case "--require-cleanup-policy": isCleanupPolicyRequired = true
         case "--require-cow": isCowRequired = true
         case "--json": isJSON = true
         case "--help": isHelp = true
@@ -97,7 +100,15 @@ struct Arguments {
     let allowed: Set<String>
     switch action {
     case "start":
-      allowed = ["--repo", "--allow-cleanup", "--base", "--path", "--require-cow", "--provider"]
+      allowed = [
+        "--repo", "--allow-cleanup", "--base", "--path", "--require-cow", "--provider",
+        "--require-cleanup-policy",
+      ]
+    case "cleanup-policy":
+      guard positional.count == 2, ["show", "enable", "revoke"].contains(positional[1]) else {
+        throw WorkscopeError("cleanup-policy requires show, enable, or revoke")
+      }
+      allowed = positional[1] == "enable" ? ["--repo", "--grace-seconds"] : ["--repo"]
     case "retain": allowed = ["--owner", "--kind", "--label"]
     case "release", "finish", "close-scope": allowed = ["--owner"]
     case "entry-exit": allowed = ["--owner", "--status"]
@@ -176,7 +187,9 @@ do {
         try arguments.options["--session-allocations"].map {
           try JSONDecoder().decode([String].self, from: Data($0.utf8))
         } ?? []
-      if arguments.positional.count == 2 && !["start", "restore", "measure"].contains(action) {
+      if arguments.positional.count == 2
+        && !["start", "restore", "measure", "cleanup-policy"].contains(action)
+      {
         ids.append(arguments.positional[1])
       }
       conversation = try ConversationContext(
@@ -190,7 +203,22 @@ do {
     }
     let registry = try Registry(
       stateDirectory: arguments.options["--state-dir"], conversation: conversation)
-    if action == "claim" {
+    if action == "cleanup-policy" {
+      let policyRepository = try arguments.value("--repo")
+      let policyStatus: RepositoryCleanupPolicyStatus
+      switch arguments.positional[1] {
+      case "enable":
+        guard let grace = TimeInterval(arguments.options["--grace-seconds"] ?? "60") else {
+          throw WorkscopeError("Invalid grace period")
+        }
+        policyStatus = try registry.enableRepositoryCleanupPolicy(
+          repository: policyRepository, graceSeconds: grace)
+      case "revoke":
+        policyStatus = try registry.revokeRepositoryCleanupPolicy(repository: policyRepository)
+      default: policyStatus = try registry.repositoryCleanupPolicy(repository: policyRepository)
+      }
+      try output(policyStatus, isJSON: arguments.isJSON)
+    } else if action == "claim" {
       try output(registry.claim(arguments.positional.dropFirst().first), isJSON: arguments.isJSON)
     } else if action == "preview" {
       try output(CleanupPlan(registry.preview()), isJSON: arguments.isJSON)
@@ -227,7 +255,8 @@ do {
           branch: id, repository: arguments.value("--repo"),
           isCleanupAuthorized: arguments.isCleanupAuthorized,
           base: arguments.options["--base"], path: arguments.options["--path"], provider: provider,
-          isCowRequired: arguments.isCowRequired)
+          isCowRequired: arguments.isCowRequired,
+          isCleanupPolicyRequired: arguments.isCleanupPolicyRequired)
       case "inspect": allocation = try registry.inspect(id)
       case "retain":
         guard let kind = OwnerKind(rawValue: try arguments.value("--kind")) else {

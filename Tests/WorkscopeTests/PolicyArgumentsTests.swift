@@ -1,9 +1,58 @@
+import Darwin
 import Foundation
 import XCTest
 
 @testable import Workscope
 
 final class PolicyArgumentsTests: XCTestCase {
+  func testRepositoryPolicyCLIRequiresExplicitScopeAndNeverTreatsSubcommandAsAllocation() throws {
+    let fixture = try Fixture()
+    for args in [
+      ["cleanup-policy", "enable"],
+      ["cleanup-policy", "enable", "--repo", fixture.repository, "--disposable-path", "ignored"],
+      ["cleanup-policy", "show", "--repo", fixture.repository, "--grace-seconds", "0"],
+      ["cleanup-policy", "enable", "--repo", fixture.repository, "--allow-cleanup"],
+      ["cleanup-policy", "enable", "--repo", fixture.repository, "--grace-seconds", "-1"],
+    ] {
+      XCTAssertNotEqual(fixture.wait(try fixture.cli(args)), 0)
+    }
+    XCTAssertNil(
+      try fixture.registry.repositoryCleanupPolicy(repository: fixture.repository).policy)
+    for action in ["show", "enable", "show"] {
+      XCTAssertEqual(
+        fixture.wait(
+          try fixture.cli([
+            "--session-id", "operator", "--session-pid", String(getpid()),
+            "cleanup-policy", action, "--repo", fixture.repository,
+          ])), 0)
+    }
+    let policy = try fixture.registry.repositoryCleanupPolicy(repository: fixture.repository)
+      .policy!
+    XCTAssertEqual(policy.cleanupPolicy.graceSeconds, 60)
+    XCTAssertEqual(
+      fixture.wait(
+        try fixture.cli([
+          "start", "inherited", "--repo", fixture.repository, "--provider", "git",
+          "--require-cleanup-policy",
+        ])), 0)
+    let allocation = try fixture.registry.list()[0]
+    XCTAssertEqual(allocation.cleanupPolicySourceID, policy.id)
+    XCTAssertFalse(allocation.isCleanupAuthorized)
+    XCTAssertEqual(
+      fixture.wait(
+        try fixture.cli([
+          "cleanup-policy", "revoke", "--repo", fixture.repository,
+        ])), 0)
+    XCTAssertNil(try fixture.registry.inspect(allocation.id).cleanupPolicy)
+    XCTAssertNotEqual(
+      fixture.wait(
+        try fixture.cli([
+          "start", "unauthorized", "--repo", fixture.repository, "--provider", "git",
+          "--require-cleanup-policy",
+        ])), 0)
+    XCTAssertEqual(try fixture.registry.list().count, 1)
+  }
+
   func testRepeatedDisposablePathsAuthorizeBothRootsWithoutAllowingOtherDuplicateOptions() throws {
     let fixture = try Fixture()
     try Data("ignored/\nother-generated/\n".utf8).write(

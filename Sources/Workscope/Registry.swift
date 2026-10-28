@@ -36,6 +36,45 @@ public struct Registry: Sendable {
     }
   }
 
+  public func repositoryCleanupPolicy(repository: String) throws -> RepositoryCleanupPolicyStatus {
+    try withRegistry(stateDirectory) { try cleanupPolicyStatus(repository, store: $0) }
+  }
+
+  public func enableRepositoryCleanupPolicy(
+    repository: String, graceSeconds: TimeInterval = 60
+  ) throws -> RepositoryCleanupPolicyStatus {
+    try require(
+      graceSeconds.isFinite && (0...86_400).contains(graceSeconds), "Invalid grace period")
+    return try withRegistry(stateDirectory) { store in
+      let status = try cleanupPolicyStatus(repository, store: store)
+      if let policy = status.policy {
+        try require(
+          policy.cleanupPolicy.graceSeconds == graceSeconds,
+          "Revoke the existing repository policy before changing its grace period")
+        return status
+      }
+      let policy = RepositoryCleanupPolicy(
+        id: UUID().uuidString.lowercased(), repository: status.repository,
+        repositoryIdentity: status.repositoryIdentity, grantedAt: Date(),
+        cleanupPolicy: CleanupPolicy(graceSeconds: graceSeconds, disposablePaths: []))
+      try store.saveRepositoryCleanupPolicy(policy)
+      return RepositoryCleanupPolicyStatus(
+        repository: status.repository, repositoryIdentity: status.repositoryIdentity, policy: policy
+      )
+    }
+  }
+
+  public func revokeRepositoryCleanupPolicy(repository: String) throws
+    -> RepositoryCleanupPolicyStatus
+  {
+    try withRegistry(stateDirectory) { store in
+      let status = try cleanupPolicyStatus(repository, store: store)
+      try store.revokeRepositoryCleanupPolicy(status.repositoryIdentity)
+      return RepositoryCleanupPolicyStatus(
+        repository: status.repository, repositoryIdentity: status.repositoryIdentity, policy: nil)
+    }
+  }
+
   public func authorizeCleanup(
     _ id: String, graceSeconds: TimeInterval = 60, disposablePaths: [String] = []
   ) throws -> Allocation {
@@ -49,6 +88,7 @@ public struct Registry: Sendable {
       try verifyIdentity(allocation)
       allocation.cleanupPolicy = CleanupPolicy(
         graceSeconds: graceSeconds, disposablePaths: disposablePaths)
+      allocation.cleanupPolicySourceID = nil
       allocation.eligibleSince = nil
       recordAttempt(&allocation, event: "policy-grant", reasons: ["Awaiting cleanup evaluation"])
       try store.save(allocation)
@@ -61,6 +101,7 @@ public struct Registry: Sendable {
       var allocation = try store.allocation(id)
       try require(!allocation.isRemovalPending, "Removal is pending")
       allocation.cleanupPolicy = nil
+      allocation.cleanupPolicySourceID = nil
       allocation.isCleanupAuthorized = false
       allocation.eligibleSince = nil
       recordAttempt(&allocation, event: "policy-revoke", reasons: ["Cleanup is not authorized"])
@@ -180,7 +221,7 @@ public struct Registry: Sendable {
   public func start(
     branch: String, repository: String, isCleanupAuthorized: Bool = false,
     base: String? = nil, path: String? = nil, provider: WorktreeProvider? = nil,
-    isCowRequired: Bool = false
+    isCowRequired: Bool = false, isCleanupPolicyRequired: Bool = false
   ) throws -> Allocation {
     try require(
       !branch.isEmpty && !branch.hasPrefix("-") && !branch.utf8.contains(0), "Invalid branch")
@@ -234,6 +275,14 @@ public struct Registry: Sendable {
         repositoryIdentity: try repositoryIdentity(primary), provider: selectedProvider,
         isCleanupAuthorized: isCleanupAuthorized,
         phase: .creating, owners: ["task:\(id)": Owner(kind: .task, label: nil)], retiredOwners: [:]
+      )
+      if let policy = try store.repositoryCleanupPolicy(allocation.repositoryIdentity) {
+        allocation.cleanupPolicy = policy.cleanupPolicy
+        allocation.cleanupPolicySourceID = policy.id
+      }
+      try require(
+        !isCleanupPolicyRequired || allocation.cleanupPolicy != nil,
+        "No standing cleanup authority. Operator setup: wf cleanup-policy enable --repo PATH. Existing allocations require an explicit operator wf authorize-cleanup ID grant."
       )
       try store.save(allocation, isNew: true)
       do {
@@ -448,6 +497,23 @@ public struct Registry: Sendable {
       return allocation
     }
   }
+}
+
+private func cleanupPolicyStatus(
+  _ repository: String, store: RegistryStore
+) throws -> RepositoryCleanupPolicyStatus {
+  let source = try canonical(repository)
+  try require(
+    try git(source, ["rev-parse", "--is-bare-repository"]) == "false",
+    "A non-bare repository is required")
+  guard let primary = try registeredPaths(source).first else {
+    throw WorkscopeError("Cannot identify primary checkout")
+  }
+  let identity = try repositoryIdentity(primary)
+  try require(try repositoryIdentity(source) == identity, "Primary repository identity mismatch")
+  return RepositoryCleanupPolicyStatus(
+    repository: primary, repositoryIdentity: identity,
+    policy: try store.repositoryCleanupPolicy(identity))
 }
 
 private func completeRestore(_ allocation: inout Allocation) {

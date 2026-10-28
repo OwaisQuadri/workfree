@@ -85,17 +85,28 @@ An explanation or read-only question need not create one.
 A repository task can explicitly start an allocation and retain it until completion.
 
 The model-facing tool can create, inspect, retain, release, finish, pin, and reconcile allocations, and report storage status.
-Creating an automatically removable allocation requires affirmative operator confirmation.
-In a non-interactive mode, the adapter refuses that permission request rather than assuming approval.
-The default start has no automatic cleanup permission.
+Normal start inherits a saved operator repository policy without a confirmation dialog, including in non-interactive mode. Without that policy, normal start succeeds but leaves cleanup unauthorized.
 
-The tool also exposes `authorize-cleanup`, `revoke-cleanup`, `preview`, `sweep`, and `restore`.
-A recoverable policy requires affirmative confirmation, including its grace period and optional disposable path.
+The operator enables future creation-time inheritance with the package-linked shell entry or an updated standalone CLI:
+
+```zsh
+wf cleanup-policy show --repo "$PWD"
+wf cleanup-policy enable --repo "$PWD"
+wf cleanup-policy revoke --repo "$PWD"
+```
+
+Enable defaults to a 60-second grace period and accepts `--grace-seconds`. It grants no disposable paths. The scope is the verified canonical Git common directory, device, and inode, not a repository name or remote. Existing allocations never enroll, including declined, restored, or previously revoked allocations. Repository revocation atomically clears derived grants and eligibility while preserving explicit allocation grants, owners, and recovery records. It fails if any derived removal is pending. Re-enabling never backfills old allocations.
+
+Standing enable and revoke are not model tool actions. The legacy `isCleanupAllowed` start input now requires already-recorded standing authority and fails with operator setup guidance if none exists. It never sends `--allow-cleanup`. The model's `authorize-cleanup` request always fails with instructions for operator CLI setup rather than opening a dialog or granting permission. For an intentionally named existing allocation, the operator can use `wf authorize-cleanup <allocation-id>` directly. Disposable paths require that explicit allocation grant. `wf revoke-cleanup <allocation-id>` clears both the grant and its inherited provenance. Sweep and restore never re-enroll it.
+
+The tool exposes `revoke-cleanup`, `preview`, `sweep`, and `restore`.
 Task owners can survive eviction under that policy.
 Execution, workspace, and pin owners still block removal. Live or uncertain conversation claims also block removal.
 The adapter sweeps recorded grants at session startup and every 60 seconds.
-Session shutdown stops the timer without releasing owners.
+Session shutdown stops the timer without releasing owners. Startup and timer sweeps never request permission or display cleanup authorization dialogs.
 No scheduler is installed outside Pi.
+
+The first standing policy advances the private registry to format 3. Older binaries reject it before mutation, even after policy revocation. Update and reload all Pi instances and update any standalone or workspace CLI before setup. Existing loaded extensions keep their captured executable until reload; uncommitted Swift source is not a runtime build input. Enabling policy does not release any conversation protection.
 
 `/wf` shows storage saved, cleanup history, and each live allocation with its identifier and any blocker.
 `/wf <allocation-id>` inspects one.

@@ -49,6 +49,7 @@ public struct Allocation: Codable, Sendable {
   public internal(set) var removedAt: Date?
   public internal(set) var reclaimedBytes: Int64?
   public internal(set) var cleanupPolicy: CleanupPolicy?
+  public internal(set) var cleanupPolicySourceID: String?
   public internal(set) var eligibleSince: Date?
   public internal(set) var recovery: RecoveryRecord?
   public internal(set) var cleanupAttempts: [CleanupAttempt]?
@@ -64,6 +65,20 @@ public struct Reclamation: Codable, Sendable {
 public struct CleanupPolicy: Codable, Sendable {
   public let graceSeconds: TimeInterval
   public let disposablePaths: [String]
+}
+
+public struct RepositoryCleanupPolicy: Codable, Sendable {
+  public let id: String
+  public let repository: String
+  public let repositoryIdentity: String
+  public let grantedAt: Date
+  public let cleanupPolicy: CleanupPolicy
+}
+
+public struct RepositoryCleanupPolicyStatus: Codable, Sendable {
+  public let repository: String
+  public let repositoryIdentity: String
+  public let policy: RepositoryCleanupPolicy?
 }
 
 public struct RecoveryRecord: Codable, Sendable {
