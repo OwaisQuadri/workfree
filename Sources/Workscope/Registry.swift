@@ -84,8 +84,30 @@ public struct Registry: Sendable {
     }
   }
 
-  public func migrateGlobalCleanupPolicy() throws -> [Allocation] {
-    try withRegistry(stateDirectory) { try $0.migrateGlobalCleanupPolicy() }
+  public func migrateGlobalCleanupPolicy(_ id: String? = nil) throws -> [Allocation] {
+    try withRegistry(stateDirectory) { try $0.migrateGlobalCleanupPolicy(id) }
+  }
+
+  public func repairRepositoryIdentity(_ id: String) throws -> Allocation {
+    try withRegistry(stateDirectory) { store in
+      var allocation = try store.allocation(id)
+      try require(
+        [.retained, .blocked].contains(allocation.phase) && !allocation.isRemovalPending
+          && allocation.recovery == nil, "Allocation is unavailable for identity repair")
+      if allocation.repositoryVolumeUUID == nil {
+        let parts = allocation.repositoryIdentity.split(separator: ":")
+        try require(parts.count >= 3, "Invalid repository identity")
+        if UInt64(parts[parts.count - 2]) != nil {
+          allocation.repositoryVolumeUUID = try repositoryVolumeUUID(allocation.repository)
+        }
+      }
+      try verifyIdentity(allocation)
+      allocation.eligibleSince = nil
+      recordAttempt(
+        &allocation, event: "identity-repair", reasons: ["Repository volume identity verified"])
+      try store.saveRepairedIdentity(allocation)
+      return allocation
+    }
   }
 
   public func repositoryCleanupPolicy(repository: String) throws -> RepositoryCleanupPolicyStatus {
@@ -121,7 +143,8 @@ public struct Registry: Sendable {
   {
     try withRegistry(stateDirectory) { store in
       let status = try cleanupPolicyStatus(repository, store: store)
-      try store.revokeRepositoryCleanupPolicy(status.repositoryIdentity)
+      try store.revokeRepositoryCleanupPolicy(
+        status.policy?.repositoryIdentity ?? status.repositoryIdentity)
       return RepositoryCleanupPolicyStatus(
         repository: status.repository, repositoryIdentity: status.repositoryIdentity, policy: nil)
     }
@@ -495,7 +518,7 @@ public struct Registry: Sendable {
         do {
           try require(allocation.isCleanupAuthorized, "Cleanup is not authorized")
           try require(
-            try repositoryIdentity(allocation.repository) == allocation.repositoryIdentity,
+            try isRepositoryIdentityMatching(allocation.repository, allocation: allocation),
             "Repository identity changed")
           try require(
             try !isRegistered(allocation.repository, allocation.path),
@@ -637,7 +660,33 @@ func repositoryIdentity(_ repository: String) throws -> String {
     git(repository, ["rev-parse", "--path-format=absolute", "--git-common-dir"]))
   var info = stat()
   try require(stat(common, &info) == 0, "Cannot inspect repository identity")
-  return "\(common):\(info.st_dev):\(info.st_ino)"
+  return "\(common):\(try repositoryVolumeUUID(repository)):\(info.st_ino)"
+}
+
+func repositoryVolumeUUID(_ repository: String) throws -> String {
+  let common = try canonical(
+    git(repository, ["rev-parse", "--path-format=absolute", "--git-common-dir"]))
+  let values = try URL(fileURLWithPath: common).resourceValues(forKeys: [.volumeUUIDStringKey])
+  guard let uuid = values.volumeUUIDString, !uuid.isEmpty else {
+    throw WorkscopeError("Cannot inspect repository volume identity")
+  }
+  return uuid
+}
+
+func isRepositoryIdentityMatching(_ repository: String, allocation: Allocation) throws -> Bool {
+  let current = try repositoryIdentity(repository)
+  if current == allocation.repositoryIdentity { return true }
+  let parts = allocation.repositoryIdentity.split(separator: ":")
+  guard parts.count >= 3, UInt64(parts[parts.count - 2]) != nil else { return false }
+  let common = parts.dropLast(2).joined(separator: ":")
+  if let uuid = allocation.repositoryVolumeUUID {
+    return current == "\(common):\(uuid):\(parts.last!)"
+  }
+  let actual = try canonical(
+    git(repository, ["rev-parse", "--path-format=absolute", "--git-common-dir"]))
+  var info = stat()
+  try require(stat(actual, &info) == 0, "Cannot inspect repository identity")
+  return "\(actual):\(info.st_dev):\(info.st_ino)" == allocation.repositoryIdentity
 }
 
 private func marker(_ allocation: Allocation) throws -> Data {
@@ -646,10 +695,10 @@ private func marker(_ allocation: Allocation) throws -> Data {
 
 private func verifyRepository(_ allocation: Allocation) throws {
   try require(
-    try repositoryIdentity(allocation.repository) == allocation.repositoryIdentity,
+    try isRepositoryIdentityMatching(allocation.repository, allocation: allocation),
     "Repository identity changed")
   try require(
-    try repositoryIdentity(allocation.path) == allocation.repositoryIdentity,
+    try isRepositoryIdentityMatching(allocation.path, allocation: allocation),
     "Checkout repository changed")
   let admin = try canonical(git(allocation.path, ["rev-parse", "--absolute-git-dir"]))
   let common = try canonical(

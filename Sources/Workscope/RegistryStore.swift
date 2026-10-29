@@ -32,15 +32,15 @@ final class RegistryStore {
       }
       try require(try strings("PRAGMA application_id") == ["1465074512"], "Unknown registry")
       try require(
-        try [["1"], ["2"], ["3"], ["4"]].contains(strings("PRAGMA user_version")),
+        try [["1"], ["2"], ["3"], ["4"], ["5"]].contains(strings("PRAGMA user_version")),
         "Unsupported registry version")
       try require(try strings("PRAGMA integrity_check") == ["ok"], "Corrupt registry")
       _ = try strings("SELECT token FROM owner_tokens LIMIT 1")
       _ = try strings("SELECT data FROM allocations LIMIT 1")
-      if try [["3"], ["4"]].contains(strings("PRAGMA user_version")) {
+      if try [["3"], ["4"], ["5"]].contains(strings("PRAGMA user_version")) {
         _ = try strings("SELECT data FROM repository_cleanup_policies LIMIT 1")
       }
-      if try strings("PRAGMA user_version") == ["4"] {
+      if try [["4"], ["5"]].contains(strings("PRAGMA user_version")) {
         _ = try strings("SELECT data FROM global_cleanup_policy LIMIT 1")
         _ = try strings("SELECT repository FROM cleanup_exclusions LIMIT 1")
       }
@@ -75,13 +75,56 @@ final class RegistryStore {
     try transaction { try saveAllocation(allocation, isNew: isNew) }
   }
 
-  func repositoryCleanupPolicy(_ identity: String) throws -> RepositoryCleanupPolicy? {
-    guard try [["3"], ["4"]].contains(strings("PRAGMA user_version")) else { return nil }
+  func saveRepairedIdentity(_ allocation: Allocation) throws {
+    try transaction {
+      let stable = try repositoryIdentity(allocation.repository)
+      if stable != allocation.repositoryIdentity,
+        let policy = try repositoryCleanupPolicy(allocation.repositoryIdentity, isExact: true)
+      {
+        try require(
+          try repositoryCleanupPolicy(stable, isExact: true) == nil,
+          "Conflicting repository cleanup policies")
+        let replacement = RepositoryCleanupPolicy(
+          id: policy.id, repository: policy.repository, repositoryIdentity: stable,
+          grantedAt: policy.grantedAt, cleanupPolicy: policy.cleanupPolicy)
+        try execute(
+          "DELETE FROM repository_cleanup_policies WHERE repository_identity=?",
+          [policy.repositoryIdentity])
+        try execute(
+          "INSERT INTO repository_cleanup_policies (repository_identity, data) VALUES (?, ?)",
+          [stable, String(decoding: try JSONEncoder().encode(replacement), as: UTF8.self)])
+      }
+      try saveAllocation(allocation)
+    }
+  }
+
+  func repositoryCleanupPolicy(_ identity: String, isExact: Bool = false) throws
+    -> RepositoryCleanupPolicy?
+  {
+    guard try [["3"], ["4"], ["5"]].contains(strings("PRAGMA user_version")) else { return nil }
     guard
       let data = try strings(
         "SELECT data FROM repository_cleanup_policies WHERE repository_identity=?", [identity]
       ).first
-    else { return nil }
+    else {
+      if isExact { return nil }
+      let common = identity.split(separator: ":").dropLast(2).joined(separator: ":")
+      let candidates = try strings("SELECT data FROM repository_cleanup_policies").map {
+        try JSONDecoder().decode(RepositoryCleanupPolicy.self, from: Data($0.utf8))
+      }.filter {
+        let parts = $0.repositoryIdentity.split(separator: ":")
+        return parts.count >= 3 && UInt64(parts[parts.count - 2]) != nil
+          && parts.dropLast(2).joined(separator: ":") == common
+      }
+      try require(candidates.count <= 1, "Conflicting repository cleanup policies")
+      guard let candidate = candidates.first else { return nil }
+      var info = stat()
+      try require(stat(common, &info) == 0, "Cannot inspect repository policy identity")
+      try require(
+        candidate.repositoryIdentity == "\(common):\(info.st_dev):\(info.st_ino)",
+        "Repository policy identity changed; repair its allocation identity first")
+      return candidate
+    }
     let policy = try JSONDecoder().decode(RepositoryCleanupPolicy.self, from: Data(data.utf8))
     try require(
       policy.repositoryIdentity == identity && !policy.id.isEmpty,
@@ -92,7 +135,14 @@ final class RegistryStore {
   func saveRepositoryCleanupPolicy(_ policy: RepositoryCleanupPolicy) throws {
     let data = String(decoding: try JSONEncoder().encode(policy), as: UTF8.self)
     try transaction {
-      if try strings("PRAGMA user_version") != ["4"] { try execute("PRAGMA user_version=3") }
+      if policy.repositoryIdentity.split(separator: ":").dropLast().last.flatMap({ UInt64($0) })
+        == nil
+      {
+        try advanceIdentityFormat()
+      }
+      if try [["1"], ["2"]].contains(strings("PRAGMA user_version")) {
+        try execute("PRAGMA user_version=3")
+      }
       try execute(
         "CREATE TABLE IF NOT EXISTS repository_cleanup_policies (repository_identity TEXT PRIMARY KEY, data TEXT NOT NULL)"
       )
@@ -123,7 +173,7 @@ final class RegistryStore {
   }
 
   func globalCleanupPolicy() throws -> GlobalCleanupPolicyStatus {
-    guard try strings("PRAGMA user_version") == ["4"] else {
+    guard try [["4"], ["5"]].contains(strings("PRAGMA user_version")) else {
       return GlobalCleanupPolicyStatus(policy: nil, excludedRepositories: [])
     }
     let policy = try strings("SELECT data FROM global_cleanup_policy").first.map {
@@ -155,7 +205,9 @@ final class RegistryStore {
         "CREATE TABLE IF NOT EXISTS global_cleanup_policy (singleton INTEGER PRIMARY KEY CHECK(singleton=1), data TEXT NOT NULL)"
       )
       try execute("CREATE TABLE IF NOT EXISTS cleanup_exclusions (repository TEXT PRIMARY KEY)")
-      try execute("PRAGMA user_version=4")
+      if try strings("PRAGMA user_version") != ["5"] {
+        try execute("PRAGMA user_version=4")
+      }
       let previous = try globalCleanupPolicy()
       let derived = try allocations().filter {
         if let excludedRepository {
@@ -196,12 +248,13 @@ final class RegistryStore {
     }
   }
 
-  func migrateGlobalCleanupPolicy() throws -> [Allocation] {
+  func migrateGlobalCleanupPolicy(_ id: String? = nil) throws -> [Allocation] {
     try transaction {
       let global = try globalCleanupPolicy()
       try require(global.policy != nil, "Enable global cleanup policy before migration")
       var migrated: [Allocation] = []
-      for var allocation in try allocations() {
+      let candidates = try id.map { [try allocation($0)] } ?? allocations()
+      for var allocation in candidates {
         guard allocation.phase == .retained || allocation.phase == .blocked,
           !allocation.isRemovalPending, allocation.recovery == nil, allocation.cleanupPolicy == nil,
           allocation.cleanupPolicySourceID == nil,
@@ -210,7 +263,7 @@ final class RegistryStore {
             ["policy-revoke", "repository-policy-revoke", "global-policy-revoke"].contains($0.event)
           }),
           let policy = try effectiveCleanupPolicy(
-            allocation.repositoryIdentity, repository: allocation.repository)
+            try repositoryIdentity(allocation.repository), repository: allocation.repository)
         else { continue }
         try verifyIdentity(allocation)
         allocation.cleanupPolicy = policy.cleanupPolicy
@@ -225,8 +278,25 @@ final class RegistryStore {
     }
   }
 
+  private func advanceIdentityFormat() throws {
+    try execute(
+      "CREATE TABLE IF NOT EXISTS repository_cleanup_policies (repository_identity TEXT PRIMARY KEY, data TEXT NOT NULL)"
+    )
+    try execute(
+      "CREATE TABLE IF NOT EXISTS global_cleanup_policy (singleton INTEGER PRIMARY KEY CHECK(singleton=1), data TEXT NOT NULL)"
+    )
+    try execute("CREATE TABLE IF NOT EXISTS cleanup_exclusions (repository TEXT PRIMARY KEY)")
+    try execute("PRAGMA user_version=5")
+  }
+
   private func saveAllocation(_ allocation: Allocation, isNew: Bool = false) throws {
     let data = String(decoding: try JSONEncoder().encode(allocation), as: UTF8.self)
+    if allocation.repositoryVolumeUUID != nil
+      || allocation.repositoryIdentity.split(separator: ":").dropLast().last.flatMap({ UInt64($0) })
+        == nil
+    {
+      try advanceIdentityFormat()
+    }
     if !(allocation.conversationClaims ?? []).isEmpty,
       try strings("PRAGMA user_version") == ["1"]
     {

@@ -150,7 +150,7 @@ final class GlobalCleanupPolicyTests: XCTestCase {
         sessionID: "global-format", processID: ProcessInfo.processInfo.processIdentifier))
     _ = try conversation.claim(allocation.id)
     _ = try fixture.registry.sweep()
-    XCTAssertEqual(try sql(fixture, "PRAGMA user_version"), 4)
+    XCTAssertEqual(try sql(fixture, "PRAGMA user_version"), 5)
     XCTAssertNil(try fixture.registry.globalCleanupPolicy().policy)
   }
 
@@ -162,8 +162,6 @@ final class GlobalCleanupPolicyTests: XCTestCase {
     _ = try fixture.registry.enableRepositoryCleanupPolicy(repository: fixture.repository)
     let allocation = try fixture.registry.start(
       branch: "compatible", repository: fixture.repository, provider: .git)
-    _ = try command(
-      legacy, ["--state-dir", fixture.registry.stateDirectory, "inspect", allocation.id])
     _ = try fixture.registry.enableGlobalCleanupPolicy()
     for arguments in [
       ["sweep"], ["finish", allocation.id],

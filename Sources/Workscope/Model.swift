@@ -36,6 +36,7 @@ public struct Allocation: Codable, Sendable {
   public let path: String
   public let repository: String
   public let repositoryIdentity: String
+  public internal(set) var repositoryVolumeUUID: String?
   public let provider: WorktreeProvider
   public internal(set) var isCleanupAuthorized: Bool
   public internal(set) var defaultPinToken: String?

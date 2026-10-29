@@ -76,6 +76,8 @@ wf cleanup-policy migrate --global
 
 Global setup is explicit and applies to future Workfree allocations in every repository except exclusions. Migration grants the saved policy to existing eligible managed allocations. It does not remove checkouts. It skips explicit grants, recorded revocations, restored or removed allocations, pending removals, and excluded repositories. Identity verification must pass for every selected allocation or the migration rolls back. Existing unmanaged worktrees remain unmanaged.
 
+For an older allocation blocked only by a changed device number, run `wf repair-identity <allocation>`. Repair verifies its original directory, inode, marker, and Git registration, then records the current persistent volume identifier without changing marker bytes or granting cleanup authority. This is an explicit binding to the current volume; old records cannot prove their historical volume identifier. Replaced or missing checkouts remain blocked. Use `wf cleanup-policy migrate --global --allocation <allocation>` to migrate one verified allocation without changing other records.
+
 Use `wf cleanup-policy include --repo PATH` to remove an exclusion for future starts. Use `wf cleanup-policy revoke --global` to stop global inheritance and clear its derived allocation grants. Repository-specific and explicit allocation grants remain independent. Exclusions prevent standing-policy inheritance and migration, including repository-specific policies, and clear existing derived grants for that repository. They do not cancel explicit allocation grants.
 
 For repository-specific setup instead:
@@ -86,7 +88,7 @@ wf cleanup-policy enable --repo "$PWD"
 wf start feature/example --repo "$PWD"
 ```
 
-Repository-specific setup records authority in the private registry for the repository's canonical Git common directory, device, and inode. Only new allocations inherit it without explicit migration. Repository replacement at the same path does not inherit repository-specific authority. Global authority covers new repositories too. Exclusions use canonical primary-repository paths, so they survive replacement at the same path. A repository-specific policy takes precedence over the global policy.
+Repository-specific setup records authority in the private registry for the repository's canonical Git common directory, persistent volume identifier, and inode. Only new allocations inherit it without explicit migration. Repository replacement at the same path does not inherit repository-specific authority. Global authority covers new repositories too. Exclusions use canonical primary-repository paths, so they survive replacement at the same path. A repository-specific policy takes precedence over the global policy.
 
 Normal Pi starts inherit the saved policy without a dialog. Without a policy, normal starts remain valid but unauthorized for cleanup. The default grace period is 60 seconds. Standing policy grants no disposable paths, so ignored files remain protected.
 

@@ -106,7 +106,7 @@ func verifyFiles(_ allocation: Allocation) throws -> [String] {
 
 func verifyRecovery(_ allocation: Allocation) throws {
   try require(
-    try repositoryIdentity(allocation.repository) == allocation.repositoryIdentity,
+    try isRepositoryIdentityMatching(allocation.repository, allocation: allocation),
     "Repository identity changed")
   guard let recovery = allocation.recovery else { throw WorkscopeError("No recovery record") }
   try require(
@@ -246,7 +246,7 @@ func reconcileRemoval(_ allocation: inout Allocation, store: RegistryStore) thro
     }
     if allocation.recovery == nil {
       try require(
-        try repositoryIdentity(allocation.repository) == allocation.repositoryIdentity,
+        try isRepositoryIdentityMatching(allocation.repository, allocation: allocation),
         "Repository identity changed")
       if try !isPresent(allocation.path) {
         allocation.phase = .removed

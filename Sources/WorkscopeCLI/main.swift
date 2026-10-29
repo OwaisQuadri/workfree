@@ -22,10 +22,11 @@ let help = """
     close-scope ID --owner TOKEN
     entry-exit ID --owner TOKEN --status INTEGER
     recover ID
+    repair-identity ID
     cleanup-policy show|enable|revoke --repo PATH [--grace-seconds 60]
     cleanup-policy show|enable|revoke --global [--grace-seconds 60]
     cleanup-policy exclude|include --repo PATH
-    cleanup-policy migrate --global
+    cleanup-policy migrate --global [--allocation ID]
     authorize-cleanup ID [--grace-seconds 60] [--disposable-path PATH]...
     revoke-cleanup ID
     preview
@@ -85,7 +86,7 @@ struct Arguments {
         case "--version": isVersion = true
         case "--state-dir", "--repo", "--base", "--path", "--owner", "--kind", "--label",
           "--status", "--provider", "--since", "--grace-seconds", "--disposable-path",
-          "--session-id", "--session-pid", "--session-cwd", "--session-allocations":
+          "--session-id", "--session-pid", "--session-cwd", "--session-allocations", "--allocation":
           index += 1
           guard index < arguments.count,
             argument == "--label"
@@ -117,7 +118,7 @@ struct Arguments {
       let policyAction = positional[1]
       if policyAction == "migrate" {
         guard isGlobal else { throw WorkscopeError("Migration requires --global") }
-        allowed = ["--global"]
+        allowed = ["--global", "--allocation"]
       } else if ["exclude", "include"].contains(policyAction) {
         allowed = ["--repo"]
       } else {
@@ -131,7 +132,8 @@ struct Arguments {
     case "release", "finish", "close-scope": allowed = ["--owner"]
     case "entry-exit": allowed = ["--owner", "--status"]
     case "run": allowed = ["--owner", "--"]
-    case "inspect", "list", "keep", "unkeep", "recover", "revoke-cleanup", "restore", "preview",
+    case "inspect", "list", "keep", "unkeep", "recover", "repair-identity", "revoke-cleanup",
+      "restore", "preview",
       "sweep":
       allowed = []
     case "authorize-cleanup": allowed = ["--grace-seconds", "--disposable-path"]
@@ -232,7 +234,9 @@ do {
       case "revoke":
         try output(registry.revokeGlobalCleanupPolicy(), isJSON: arguments.isJSON)
       case "migrate":
-        try output(registry.migrateGlobalCleanupPolicy(), isJSON: arguments.isJSON)
+        try output(
+          registry.migrateGlobalCleanupPolicy(arguments.options["--allocation"]),
+          isJSON: arguments.isJSON)
       default: try output(registry.globalCleanupPolicy(), isJSON: arguments.isJSON)
       }
     } else if action == "cleanup-policy",
@@ -316,6 +320,7 @@ do {
         }
         allocation = try registry.entryExit(id, owner: arguments.value("--owner"), status: status)
       case "recover": allocation = try registry.recover(id)
+      case "repair-identity": allocation = try registry.repairRepositoryIdentity(id)
       case "authorize-cleanup":
         guard let grace = TimeInterval(arguments.options["--grace-seconds"] ?? "60") else {
           throw WorkscopeError("Invalid grace period")

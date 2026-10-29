@@ -308,10 +308,10 @@ final class RepositoryCleanupPolicyTests: XCTestCase {
     }
   }
 
-  func testFirstPolicyAdvancesFormatAndConversationSavesNeverDowngrade() throws {
+  func testStableIdentityFormatAndConversationSavesNeverDowngrade() throws {
     let fixture = try Fixture()
     let before = try start(fixture)
-    XCTAssertEqual(try version(fixture), "1")
+    XCTAssertEqual(try version(fixture), "5")
     XCTAssertNil(
       try Registry(stateDirectory: fixture.registry.stateDirectory).inspect(before.id).cleanupPolicy
     )
@@ -319,13 +319,13 @@ final class RepositoryCleanupPolicyTests: XCTestCase {
       stateDirectory: fixture.registry.stateDirectory,
       conversation: ConversationContext(sessionID: "live", processID: getpid()))
     _ = try conversation.claim(before.id)
-    XCTAssertEqual(try version(fixture), "2")
+    XCTAssertEqual(try version(fixture), "5")
     _ = try fixture.registry.enableRepositoryCleanupPolicy(repository: fixture.repository)
-    XCTAssertEqual(try version(fixture), "3")
+    XCTAssertEqual(try version(fixture), "5")
     _ = try conversation.claim(before.id)
     _ = try fixture.registry.revokeRepositoryCleanupPolicy(repository: fixture.repository)
     _ = try fixture.registry.sweep()
-    XCTAssertEqual(try version(fixture), "3")
+    XCTAssertEqual(try version(fixture), "5")
     XCTAssertNil(try fixture.registry.inspect(before.id).cleanupPolicy)
   }
 
@@ -357,8 +357,6 @@ final class RepositoryCleanupPolicyTests: XCTestCase {
     }
     let fixture = try Fixture()
     let allocation = try start(fixture)
-    _ = try command(
-      legacy, ["--state-dir", fixture.registry.stateDirectory, "inspect", allocation.id])
     _ = try fixture.registry.enableRepositoryCleanupPolicy(repository: fixture.repository)
     for args in [
       ["sweep"], ["finish", allocation.id],

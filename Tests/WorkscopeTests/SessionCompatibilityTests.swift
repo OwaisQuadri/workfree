@@ -11,8 +11,13 @@ final class SessionCompatibilityTests: XCTestCase {
       throw XCTSkip("Set WORKFREE_LEGACY_EXECUTABLE to a pre-conversation-claims wf build")
     }
     let fixture = try Fixture()
-    let allocation = try fixture.registry.start(
-      branch: "compatibility", repository: fixture.repository, provider: .git)
+    let output = try command(
+      legacy,
+      [
+        "--state-dir", fixture.registry.stateDirectory, "--json", "start", "compatibility",
+        "--repo", fixture.repository, "--provider", "git",
+      ])
+    let allocation = try JSONDecoder().decode(Allocation.self, from: Data(output.utf8))
     _ = try fixture.registry.authorizeCleanup(allocation.id, graceSeconds: 0)
     XCTAssertEqual(try version(fixture), 1)
     _ = try command(
