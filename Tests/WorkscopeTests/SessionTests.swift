@@ -96,6 +96,26 @@ final class SessionTests: XCTestCase {
     XCTAssertTrue(try isPresent(allocation.path))
   }
 
+  func testInvalidSavedAssignmentDoesNotBlockNewWorkAndRemainsProtected() throws {
+    let fixture = try Fixture()
+    let old = try fixture.registry.start(
+      branch: "old", repository: fixture.repository, provider: .git)
+    _ = try fixture.registry.authorizeCleanup(old.id, graceSeconds: 0)
+    try fixture.inject(old, overrides: ["repositoryIdentity": "changed-device"])
+    let conversation = try Registry(
+      stateDirectory: fixture.registry.stateDirectory,
+      conversation: ConversationContext(
+        sessionID: "resumed", processID: getpid(), allocationIDs: [old.id]))
+    let created = try conversation.start(
+      branch: "new", repository: fixture.repository, provider: .git)
+    XCTAssertEqual(created.conversationClaims?.map(\.sessionID), ["resumed"])
+    XCTAssertEqual(
+      try fixture.registry.inspect(old.id).conversationClaims?.map(\.sessionID), ["resumed"])
+    XCTAssertThrowsError(try conversation.claim(old.id))
+    _ = try fixture.registry.sweep()
+    XCTAssertTrue(try isPresent(old.path))
+  }
+
   func testStartAndRestoreReturnAlreadyClaimedAndRejectPendingAcquisition() throws {
     let fixture = try Fixture()
     let conversation = try Registry(

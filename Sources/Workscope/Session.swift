@@ -74,6 +74,10 @@ func acquireConversation(_ allocation: inout Allocation, _ context: Conversation
     !allocation.isRemovalPending && (allocation.phase == .retained || allocation.phase == .blocked),
     "Allocation is unavailable for conversation acquisition")
   try verifyIdentity(allocation)
+  retainConversation(&allocation, context)
+}
+
+private func retainConversation(_ allocation: inout Allocation, _ context: ConversationContext) {
   var claims = (allocation.conversationClaims ?? []).filter { isConversationBlocking($0) }
   if !claims.contains(context.claim) { claims.append(context.claim) }
   allocation.conversationClaims = claims
@@ -91,8 +95,11 @@ func withConversationRegistry<T>(
       for id in ids { _ = try store.allocation(id) }
       for var allocation in allocations where allocation.id != id {
         let isCwd = conversation.cwd.map { isWithin($0, allocation.path) } ?? false
-        if ids.contains(allocation.id) || isCwd {
+        if isCwd {
           try acquireConversation(&allocation, conversation)
+          try store.save(allocation)
+        } else if ids.contains(allocation.id) {
+          retainConversation(&allocation, conversation)
           try store.save(allocation)
         }
       }

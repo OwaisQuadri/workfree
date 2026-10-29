@@ -51,6 +51,14 @@ async function fixture(isApproved = false) {
   return { calls, rawCalls, entries, failures, executables, confirmations, result, commands, handlers, ctx, tool, run: (input: any) => tool.execute("call", input, undefined, undefined, ctx) };
 }
 
+test("claim without an id reaches the command and preserves explicit targets", async () => {
+  const f = await fixture();
+  await f.run({ action: "claim" });
+  await f.run({ action: "claim", id: "assigned" });
+  assert.deepEqual(f.calls, [["--json", "claim"], ["--json", "claim", "assigned"]]);
+  assert.throws(() => argumentsFor({ action: "inspect" }, "/repo"), /requires an allocation id/);
+});
+
 test("start defaults to no cleanup permission and passes arguments without shell interpolation", () => {
   assert.deepEqual(argumentsFor({ action: "start", branch: "feature/a;echo unsafe" }, "/repo with spaces"), ["--json", "start", "feature/a;echo unsafe", "--repo", "/repo with spaces"]);
   assert.ok(argumentsFor({ action: "start", branch: "feature/a", isCopyOnWriteRequired: true }, "/repo").includes("--require-cow"));

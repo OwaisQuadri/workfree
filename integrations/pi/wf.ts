@@ -33,6 +33,8 @@ export function argumentsFor(input: {
     args.push(input.branch, "--repo", input.repo ?? cwd);
     if (input.isCleanupAllowed) args.push("--require-cleanup-policy");
     if (input.isCopyOnWriteRequired) args.push("--require-cow");
+  } else if (input.action === "claim") {
+    if (input.id) args.push(input.id);
   } else if (!["list", "status", "preview", "sweep"].includes(input.action)) {
     if (!input.id) throw new Error(`${input.action} requires an allocation id`);
     args.push(input.id);
