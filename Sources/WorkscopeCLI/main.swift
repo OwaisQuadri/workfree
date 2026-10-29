@@ -227,7 +227,8 @@ do {
         guard let grace = TimeInterval(arguments.options["--grace-seconds"] ?? "60") else {
           throw WorkscopeError("Invalid grace period")
         }
-        try output(registry.enableGlobalCleanupPolicy(graceSeconds: grace), isJSON: arguments.isJSON)
+        try output(
+          registry.enableGlobalCleanupPolicy(graceSeconds: grace), isJSON: arguments.isJSON)
       case "revoke":
         try output(registry.revokeGlobalCleanupPolicy(), isJSON: arguments.isJSON)
       case "migrate":

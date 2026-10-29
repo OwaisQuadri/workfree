@@ -131,7 +131,8 @@ final class RegistryStore {
     }
     return GlobalCleanupPolicyStatus(
       policy: policy,
-      excludedRepositories: try strings("SELECT repository FROM cleanup_exclusions ORDER BY repository"))
+      excludedRepositories: try strings(
+        "SELECT repository FROM cleanup_exclusions ORDER BY repository"))
   }
 
   func effectiveCleanupPolicy(_ identity: String, repository: String) throws
@@ -148,30 +149,39 @@ final class RegistryStore {
   ) throws {
     try transaction {
       try execute(
-        "CREATE TABLE IF NOT EXISTS repository_cleanup_policies (repository_identity TEXT PRIMARY KEY, data TEXT NOT NULL)")
+        "CREATE TABLE IF NOT EXISTS repository_cleanup_policies (repository_identity TEXT PRIMARY KEY, data TEXT NOT NULL)"
+      )
       try execute(
-        "CREATE TABLE IF NOT EXISTS global_cleanup_policy (singleton INTEGER PRIMARY KEY CHECK(singleton=1), data TEXT NOT NULL)")
+        "CREATE TABLE IF NOT EXISTS global_cleanup_policy (singleton INTEGER PRIMARY KEY CHECK(singleton=1), data TEXT NOT NULL)"
+      )
       try execute("CREATE TABLE IF NOT EXISTS cleanup_exclusions (repository TEXT PRIMARY KEY)")
       try execute("PRAGMA user_version=4")
       let previous = try globalCleanupPolicy()
       let derived = try allocations().filter {
-        if let excludedRepository { return $0.repository == excludedRepository && $0.cleanupPolicySourceID != nil }
+        if let excludedRepository {
+          return isExcluded && $0.repository == excludedRepository
+            && $0.cleanupPolicySourceID != nil
+        }
         return previous.policy != nil && $0.cleanupPolicySourceID == previous.policy?.id
       }
       try require(!derived.contains { $0.isRemovalPending }, "Derived removal is pending")
-      if excludedRepository != nil || policy == nil {
+      if (excludedRepository != nil && isExcluded) || (excludedRepository == nil && policy == nil) {
         for var allocation in derived {
           allocation.cleanupPolicy = nil
           allocation.cleanupPolicySourceID = nil
           allocation.isStandingCleanupDeclined = true
           allocation.eligibleSince = nil
-          recordAttempt(&allocation, event: "global-policy-revoke", reasons: ["Standing cleanup policy revoked"])
+          recordAttempt(
+            &allocation, event: "global-policy-revoke",
+            reasons: ["Standing cleanup policy revoked"])
           try saveAllocation(allocation)
         }
       }
       if let excludedRepository {
         if isExcluded {
-          try execute("INSERT OR IGNORE INTO cleanup_exclusions (repository) VALUES (?)", [excludedRepository])
+          try execute(
+            "INSERT OR IGNORE INTO cleanup_exclusions (repository) VALUES (?)", [excludedRepository]
+          )
         } else {
           try execute("DELETE FROM cleanup_exclusions WHERE repository=?", [excludedRepository])
         }
@@ -193,7 +203,7 @@ final class RegistryStore {
       var migrated: [Allocation] = []
       for var allocation in try allocations() {
         guard allocation.phase == .retained || allocation.phase == .blocked,
-          !allocation.isRemovalPending, allocation.cleanupPolicy == nil,
+          !allocation.isRemovalPending, allocation.recovery == nil, allocation.cleanupPolicy == nil,
           allocation.cleanupPolicySourceID == nil,
           allocation.isStandingCleanupDeclined != true,
           !(allocation.cleanupAttempts ?? []).contains(where: {
@@ -206,7 +216,8 @@ final class RegistryStore {
         allocation.cleanupPolicy = policy.cleanupPolicy
         allocation.cleanupPolicySourceID = policy.id
         allocation.eligibleSince = nil
-        recordAttempt(&allocation, event: "global-policy-migrate", reasons: ["Awaiting cleanup evaluation"])
+        recordAttempt(
+          &allocation, event: "global-policy-migrate", reasons: ["Awaiting cleanup evaluation"])
         try saveAllocation(allocation)
         migrated.append(allocation)
       }

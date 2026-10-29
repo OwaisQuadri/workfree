@@ -53,10 +53,11 @@ public struct Registry: Sendable {
           "Revoke the global policy before changing its grace period")
         return status
       }
-      try store.changeGlobalCleanupPolicy(RepositoryCleanupPolicy(
-        id: UUID().uuidString.lowercased(), repository: "", repositoryIdentity: "",
-        grantedAt: Date(),
-        cleanupPolicy: CleanupPolicy(graceSeconds: graceSeconds, disposablePaths: [])))
+      try store.changeGlobalCleanupPolicy(
+        RepositoryCleanupPolicy(
+          id: UUID().uuidString.lowercased(), repository: "", repositoryIdentity: "",
+          grantedAt: Date(),
+          cleanupPolicy: CleanupPolicy(graceSeconds: graceSeconds, disposablePaths: [])))
       return try store.globalCleanupPolicy()
     }
   }
