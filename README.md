@@ -65,7 +65,20 @@ Use the returned allocation identifier with `wf inspect`, `wf keep`, or `wf fini
 
 ## Recoverable cleanup
 
-Enable dialog-free automatic cleanup for future allocations in one repository:
+Enable dialog-free automatic cleanup across repositories, with an exclusion list:
+
+```zsh
+wf cleanup-policy enable --global
+wf cleanup-policy exclude --repo /path/to/excluded-repository
+wf cleanup-policy show --global
+wf cleanup-policy migrate --global
+```
+
+Global setup is explicit and applies to future Workfree allocations in every repository except exclusions. Migration grants the saved policy to existing eligible managed allocations. It does not remove checkouts. It skips explicit grants, recorded revocations, restored or removed allocations, pending removals, and excluded repositories. Identity verification must pass for every selected allocation or the migration rolls back. Existing unmanaged worktrees remain unmanaged.
+
+Use `wf cleanup-policy include --repo PATH` to remove an exclusion for future starts. Use `wf cleanup-policy revoke --global` to stop global inheritance and clear its derived allocation grants. Repository-specific and explicit allocation grants remain independent. Exclusions prevent standing-policy inheritance and migration, including repository-specific policies, and clear existing derived grants for that repository. They do not cancel explicit allocation grants.
+
+For repository-specific setup instead:
 
 ```zsh
 wf cleanup-policy show --repo "$PWD"
@@ -73,7 +86,7 @@ wf cleanup-policy enable --repo "$PWD"
 wf start feature/example --repo "$PWD"
 ```
 
-This operator setup records authority in the private registry for the repository's canonical Git common directory, device, and inode. Only new allocations inherit it. Existing allocations, including previously declined or revoked ones, do not enroll. Repository replacement at the same path does not inherit it. There is no global default.
+Repository-specific setup records authority in the private registry for the repository's canonical Git common directory, device, and inode. Only new allocations inherit it without explicit migration. Repository replacement at the same path does not inherit repository-specific authority. Global authority covers new repositories too. Exclusions use canonical primary-repository paths, so they survive replacement at the same path. A repository-specific policy takes precedence over the global policy.
 
 Normal Pi starts inherit the saved policy without a dialog. Without a policy, normal starts remain valid but unauthorized for cleanup. The default grace period is 60 seconds. Standing policy grants no disposable paths, so ignored files remain protected.
 
@@ -112,7 +125,7 @@ Aliases, tracked contents, and paths outside the checkout fail validation.
 Inspect the last 32 cleanup attempts and recovery record with `wf inspect`.
 Legacy `--allow-cleanup` allocations keep their final-owner contract until an explicit policy grant. Standing policy uses recoverable cleanup, not that legacy flag. The model's legacy `isCleanupAllowed` input now only requires an existing standing policy; it cannot create permission.
 
-The first standing policy advances the registry format to version 3, even after revocation. Older binaries fail closed and must be updated. Update and reload Pi and any shell or workspace integrations before enabling policy. Source edits alone do not change an already loaded runtime. See [Pi runtime updates](docs/pi.md#update).
+The first repository policy advances the registry format to version 3. Global setup or an exclusion advances it to version 4. The format never downgrades after revocation. Older binaries fail closed and must be updated. Update and reload Pi and any shell or workspace integrations before enabling policy. Source edits alone do not change an already loaded runtime. See [Pi runtime updates](docs/pi.md#update).
 
 ## Storage saved
 

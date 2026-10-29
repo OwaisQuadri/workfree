@@ -23,6 +23,9 @@ let help = """
     entry-exit ID --owner TOKEN --status INTEGER
     recover ID
     cleanup-policy show|enable|revoke --repo PATH [--grace-seconds 60]
+    cleanup-policy show|enable|revoke --global [--grace-seconds 60]
+    cleanup-policy exclude|include --repo PATH
+    cleanup-policy migrate --global
     authorize-cleanup ID [--grace-seconds 60] [--disposable-path PATH]...
     revoke-cleanup ID
     preview
@@ -39,7 +42,8 @@ let help = """
 
   Uses simgit CoW if available, otherwise native Git. --require-cow refuses native Git.
   Selected-provider failures never switch providers.
-  Cleanup permission defaults to false. Execution ownership persists after entry exit.
+  Cleanup uses recorded global or repository authority; otherwise it is disabled.
+  Execution ownership persists after entry exit.
   close-scope is an explicit cooperative assertion that every scope user has left.
   run inherits standard streams and returns the child exit status, including with --json.
   """
@@ -48,6 +52,7 @@ struct Arguments {
   var positional: [String] = []
   var options: [String: String] = [:]
   var disposablePaths: [String] = []
+  var isGlobal = false
   var isCowRequired = false
   var isCleanupAuthorized = false
   var isCleanupPolicyRequired = false
@@ -71,6 +76,7 @@ struct Arguments {
           throw WorkscopeError("Duplicate option: \(argument)")
         }
         switch argument {
+        case "--global": isGlobal = true
         case "--allow-cleanup": isCleanupAuthorized = true
         case "--require-cleanup-policy": isCleanupPolicyRequired = true
         case "--require-cow": isCowRequired = true
@@ -97,7 +103,7 @@ struct Arguments {
     }
     if isHelp || isVersion { return }
     guard let action = positional.first else { throw WorkscopeError("Missing command; use --help") }
-    let allowed: Set<String>
+    var allowed: Set<String>
     switch action {
     case "start":
       allowed = [
@@ -105,10 +111,22 @@ struct Arguments {
         "--require-cleanup-policy",
       ]
     case "cleanup-policy":
-      guard positional.count == 2, ["show", "enable", "revoke"].contains(positional[1]) else {
-        throw WorkscopeError("cleanup-policy requires show, enable, or revoke")
+      guard positional.count == 2,
+        ["show", "enable", "revoke", "exclude", "include", "migrate"].contains(positional[1])
+      else { throw WorkscopeError("Invalid cleanup-policy action") }
+      let policyAction = positional[1]
+      if policyAction == "migrate" {
+        guard isGlobal else { throw WorkscopeError("Migration requires --global") }
+        allowed = ["--global"]
+      } else if ["exclude", "include"].contains(policyAction) {
+        allowed = ["--repo"]
+      } else {
+        guard isGlobal != (options["--repo"] != nil) else {
+          throw WorkscopeError("Choose exactly one of --global or --repo PATH")
+        }
+        allowed = isGlobal ? ["--global"] : ["--repo"]
+        if policyAction == "enable" { allowed.insert("--grace-seconds") }
       }
-      allowed = positional[1] == "enable" ? ["--repo", "--grace-seconds"] : ["--repo"]
     case "retain": allowed = ["--owner", "--kind", "--label"]
     case "release", "finish", "close-scope": allowed = ["--owner"]
     case "entry-exit": allowed = ["--owner", "--status"]
@@ -203,7 +221,29 @@ do {
     }
     let registry = try Registry(
       stateDirectory: arguments.options["--state-dir"], conversation: conversation)
-    if action == "cleanup-policy" {
+    if action == "cleanup-policy", arguments.isGlobal {
+      switch arguments.positional[1] {
+      case "enable":
+        guard let grace = TimeInterval(arguments.options["--grace-seconds"] ?? "60") else {
+          throw WorkscopeError("Invalid grace period")
+        }
+        try output(
+          registry.enableGlobalCleanupPolicy(graceSeconds: grace), isJSON: arguments.isJSON)
+      case "revoke":
+        try output(registry.revokeGlobalCleanupPolicy(), isJSON: arguments.isJSON)
+      case "migrate":
+        try output(registry.migrateGlobalCleanupPolicy(), isJSON: arguments.isJSON)
+      default: try output(registry.globalCleanupPolicy(), isJSON: arguments.isJSON)
+      }
+    } else if action == "cleanup-policy",
+      ["exclude", "include"].contains(arguments.positional[1])
+    {
+      try output(
+        registry.excludeRepositoryFromCleanup(
+          repository: arguments.value("--repo"),
+          isExcluded: arguments.positional[1] == "exclude"),
+        isJSON: arguments.isJSON)
+    } else if action == "cleanup-policy" {
       let policyRepository = try arguments.value("--repo")
       let policyStatus: RepositoryCleanupPolicyStatus
       switch arguments.positional[1] {

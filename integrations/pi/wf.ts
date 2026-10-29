@@ -24,7 +24,7 @@ export function argumentsFor(input: {
   disposablePaths?: string[];
 }, cwd: string): string[] {
   if (input.action === "authorize-cleanup") {
-    throw new Error("New cleanup authority requires operator setup: wf cleanup-policy enable --repo PATH for future allocations, or wf authorize-cleanup ID for an existing allocation. The model cannot grant permission.");
+    throw new Error("New cleanup authority requires operator setup: wf cleanup-policy enable --global or --repo PATH for future allocations, wf cleanup-policy migrate --global for eligible existing allocations, or wf authorize-cleanup ID for one allocation. The model cannot grant permission.");
   }
   if (input.isCleanupAllowed && input.action !== "start") throw new Error("Cleanup permission applies only to start");
   const args: string[] = [input.action];
@@ -139,7 +139,7 @@ export default async function wf(pi: ExtensionAPI) {
   pi.registerTool({
     name: "wf",
     label: "Workfree",
-    description: "Claim allocations before raw shell use or child dispatch. Structured operations acquire durable conversation protection automatically. Shutdown and idle do not release it. Arbitrary transcript paths are not inferred. Manage task identity, active checkout users, and recoverable cleanup. Normal start inherits saved repository cleanup authority without a dialog. Without it, start retains an unauthorized checkout. New authority requires operator CLI setup with wf cleanup-policy enable --repo PATH; authorize-cleanup cannot grant model authority. Under that policy, task owners survive eviction; workspace, execution, and pin owners block it. Never infer scope closure from command exit. preview is read-only; sweep evaluates recorded permissions; restore recreates the preserved commit.",
+    description: "Claim allocations before raw shell use or child dispatch. Structured operations acquire durable conversation protection automatically. Shutdown and idle do not release it. Arbitrary transcript paths are not inferred. Manage task identity, active checkout users, and recoverable cleanup. Normal start inherits saved global or repository cleanup authority unless the repository is excluded. Without it, start retains an unauthorized checkout. New authority requires operator CLI setup with wf cleanup-policy enable --global or --repo PATH; authorize-cleanup cannot grant model authority. Under that policy, task owners survive eviction; workspace, execution, and pin owners block it. Never infer scope closure from command exit. preview is read-only; sweep evaluates recorded permissions; restore recreates the preserved commit.",
     parameters: Type.Object({
       action: Type.Union(actions.map((action) => Type.Literal(action))),
       id: Type.Optional(Type.String()),
@@ -149,7 +149,7 @@ export default async function wf(pi: ExtensionAPI) {
       kind: Type.Optional(Type.Union([Type.Literal("task"), Type.Literal("workspace"), Type.Literal("execution"), Type.Literal("pin")])),
       label: Type.Optional(Type.String()),
       status: Type.Optional(Type.Integer()),
-      isCleanupAllowed: Type.Optional(Type.Boolean({ description: "Require already-recorded standing repository cleanup authority for start. This cannot grant permission. Normal start inherits saved policy without this flag." })),
+      isCleanupAllowed: Type.Optional(Type.Boolean({ description: "Require already-recorded standing cleanup authority for start. This cannot grant permission. Normal start inherits saved policy without this flag." })),
       isCopyOnWriteRequired: Type.Optional(Type.Boolean({ description: "Require the optional simgit copy-on-write provider for this new allocation." })),
       since: Type.Optional(Type.String({ description: "Cleanup history window for status, such as 24h, 30d, 2w, or all. Default 30d." })),
       graceSeconds: Type.Optional(Type.Number({ description: "Operator CLI grant only. The model cannot set cleanup policy." })),
