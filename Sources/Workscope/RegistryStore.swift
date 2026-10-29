@@ -87,7 +87,9 @@ final class RegistryStore {
         let replacement = RepositoryCleanupPolicy(
           id: policy.id, repository: policy.repository, repositoryIdentity: stable,
           grantedAt: policy.grantedAt, cleanupPolicy: policy.cleanupPolicy)
-        try execute("DELETE FROM repository_cleanup_policies WHERE repository_identity=?", [policy.repositoryIdentity])
+        try execute(
+          "DELETE FROM repository_cleanup_policies WHERE repository_identity=?",
+          [policy.repositoryIdentity])
         try execute(
           "INSERT INTO repository_cleanup_policies (repository_identity, data) VALUES (?, ?)",
           [stable, String(decoding: try JSONEncoder().encode(replacement), as: UTF8.self)])
@@ -96,7 +98,9 @@ final class RegistryStore {
     }
   }
 
-  func repositoryCleanupPolicy(_ identity: String, isExact: Bool = false) throws -> RepositoryCleanupPolicy? {
+  func repositoryCleanupPolicy(_ identity: String, isExact: Bool = false) throws
+    -> RepositoryCleanupPolicy?
+  {
     guard try [["3"], ["4"], ["5"]].contains(strings("PRAGMA user_version")) else { return nil }
     guard
       let data = try strings(
@@ -107,11 +111,13 @@ final class RegistryStore {
       let common = identity.split(separator: ":").dropLast(2).joined(separator: ":")
       let candidates = try strings("SELECT data FROM repository_cleanup_policies").map {
         try JSONDecoder().decode(RepositoryCleanupPolicy.self, from: Data($0.utf8))
-      }.filter { $0.repositoryIdentity.split(separator: ":").dropLast(2).joined(separator: ":") == common }
+      }.filter {
+        let parts = $0.repositoryIdentity.split(separator: ":")
+        return parts.count >= 3 && UInt64(parts[parts.count - 2]) != nil
+          && parts.dropLast(2).joined(separator: ":") == common
+      }
       try require(candidates.count <= 1, "Conflicting repository cleanup policies")
       guard let candidate = candidates.first else { return nil }
-      let parts = candidate.repositoryIdentity.split(separator: ":")
-      guard parts.count >= 3, UInt64(parts[parts.count - 2]) != nil else { return nil }
       var info = stat()
       try require(stat(common, &info) == 0, "Cannot inspect repository policy identity")
       try require(
@@ -129,7 +135,9 @@ final class RegistryStore {
   func saveRepositoryCleanupPolicy(_ policy: RepositoryCleanupPolicy) throws {
     let data = String(decoding: try JSONEncoder().encode(policy), as: UTF8.self)
     try transaction {
-      if policy.repositoryIdentity.split(separator: ":").dropLast().last.flatMap({ UInt64($0) }) == nil {
+      if policy.repositoryIdentity.split(separator: ":").dropLast().last.flatMap({ UInt64($0) })
+        == nil
+      {
         try advanceIdentityFormat()
       }
       if try [["1"], ["2"]].contains(strings("PRAGMA user_version")) {
@@ -271,8 +279,12 @@ final class RegistryStore {
   }
 
   private func advanceIdentityFormat() throws {
-    try execute("CREATE TABLE IF NOT EXISTS repository_cleanup_policies (repository_identity TEXT PRIMARY KEY, data TEXT NOT NULL)")
-    try execute("CREATE TABLE IF NOT EXISTS global_cleanup_policy (singleton INTEGER PRIMARY KEY CHECK(singleton=1), data TEXT NOT NULL)")
+    try execute(
+      "CREATE TABLE IF NOT EXISTS repository_cleanup_policies (repository_identity TEXT PRIMARY KEY, data TEXT NOT NULL)"
+    )
+    try execute(
+      "CREATE TABLE IF NOT EXISTS global_cleanup_policy (singleton INTEGER PRIMARY KEY CHECK(singleton=1), data TEXT NOT NULL)"
+    )
     try execute("CREATE TABLE IF NOT EXISTS cleanup_exclusions (repository TEXT PRIMARY KEY)")
     try execute("PRAGMA user_version=5")
   }
@@ -280,7 +292,8 @@ final class RegistryStore {
   private func saveAllocation(_ allocation: Allocation, isNew: Bool = false) throws {
     let data = String(decoding: try JSONEncoder().encode(allocation), as: UTF8.self)
     if allocation.repositoryVolumeUUID != nil
-      || allocation.repositoryIdentity.split(separator: ":").dropLast().last.flatMap({ UInt64($0) }) == nil
+      || allocation.repositoryIdentity.split(separator: ":").dropLast().last.flatMap({ UInt64($0) })
+        == nil
     {
       try advanceIdentityFormat()
     }

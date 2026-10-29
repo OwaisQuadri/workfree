@@ -132,7 +132,8 @@ struct Arguments {
     case "release", "finish", "close-scope": allowed = ["--owner"]
     case "entry-exit": allowed = ["--owner", "--status"]
     case "run": allowed = ["--owner", "--"]
-    case "inspect", "list", "keep", "unkeep", "recover", "repair-identity", "revoke-cleanup", "restore", "preview",
+    case "inspect", "list", "keep", "unkeep", "recover", "repair-identity", "revoke-cleanup",
+      "restore", "preview",
       "sweep":
       allowed = []
     case "authorize-cleanup": allowed = ["--grace-seconds", "--disposable-path"]

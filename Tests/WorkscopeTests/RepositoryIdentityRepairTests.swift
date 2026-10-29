@@ -21,9 +21,10 @@ final class RepositoryIdentityRepairTests: XCTestCase {
     XCTAssertNil(repaired.cleanupPolicy)
     XCTAssertNil(repaired.eligibleSince)
     XCTAssertEqual(
-      fixture.wait(try fixture.cli([
-        "cleanup-policy", "migrate", "--global", "--allocation", allocation.id,
-      ])), 0)
+      fixture.wait(
+        try fixture.cli([
+          "cleanup-policy", "migrate", "--global", "--allocation", allocation.id,
+        ])), 0)
     XCTAssertEqual(try fixture.registry.inspect(allocation.id).cleanupPolicySourceID, policy.id)
     let reloaded = try Registry(stateDirectory: fixture.registry.stateDirectory)
     try verifyIdentity(reloaded.inspect(allocation.id))
@@ -92,7 +93,8 @@ final class RepositoryIdentityRepairTests: XCTestCase {
     try withConversationRegistry(fixture.registry.stateDirectory, conversation: nil) {
       try $0.saveRepositoryCleanupPolicy(policy)
     }
-    XCTAssertThrowsError(try fixture.registry.repositoryCleanupPolicy(repository: fixture.repository))
+    XCTAssertThrowsError(
+      try fixture.registry.repositoryCleanupPolicy(repository: fixture.repository))
     _ = try fixture.registry.repairRepositoryIdentity(allocation.id)
     let saved = try fixture.registry.repositoryCleanupPolicy(repository: fixture.repository).policy
     XCTAssertEqual(saved?.id, policy.id)
@@ -105,7 +107,60 @@ final class RepositoryIdentityRepairTests: XCTestCase {
     XCTAssertTrue(try fixture.registry.inspect(allocation.id).isStandingCleanupDeclined == true)
   }
 
-  private func legacyAllocation(_ fixture: Fixture, isChangedInode: Bool = false) throws -> Allocation {
+  func testObsoleteStablePoliciesDoNotBlockRepeatedReplacementOrGlobalFallback() throws {
+    let fixture = try Fixture()
+    let common = try canonical(
+      git(fixture.repository, ["rev-parse", "--path-format=absolute", "--git-common-dir"]))
+    try withConversationRegistry(fixture.registry.stateDirectory, conversation: nil) { store in
+      for suffix in ["old-volume-a:1", "old-volume-b:2"] {
+        try store.saveRepositoryCleanupPolicy(
+          RepositoryCleanupPolicy(
+            id: suffix, repository: fixture.repository,
+            repositoryIdentity: common + ":" + suffix, grantedAt: Date(),
+            cleanupPolicy: CleanupPolicy(graceSeconds: 60, disposablePaths: [])))
+      }
+    }
+    XCTAssertNil(
+      try fixture.registry.repositoryCleanupPolicy(repository: fixture.repository).policy)
+    let global = try fixture.registry.enableGlobalCleanupPolicy().policy!
+    let allocation = try fixture.registry.start(
+      branch: "replacement", repository: fixture.repository, provider: .git)
+    XCTAssertEqual(allocation.cleanupPolicySourceID, global.id)
+    let policy = try fixture.registry.enableRepositoryCleanupPolicy(repository: fixture.repository)
+      .policy!
+    XCTAssertEqual(
+      try fixture.registry.repositoryCleanupPolicy(repository: fixture.repository).policy?.id,
+      policy.id)
+  }
+
+  func testVersionFourBinaryRejectsStableIdentityBeforeMutation() throws {
+    guard let legacy = ProcessInfo.processInfo.environment["WORKFREE_V4_EXECUTABLE"] else {
+      throw XCTSkip("Set WORKFREE_V4_EXECUTABLE to a verified version-4 wf build")
+    }
+    let fixture = try Fixture()
+    let allocation = try fixture.registry.start(
+      branch: "format-five", repository: fixture.repository, provider: .git)
+    for arguments in [["sweep"], ["finish", allocation.id]] {
+      let process = Process()
+      let errors = Pipe()
+      process.executableURL = URL(fileURLWithPath: legacy)
+      process.arguments = ["--state-dir", fixture.registry.stateDirectory] + arguments
+      process.standardOutput = FileHandle.nullDevice
+      process.standardError = errors
+      try process.run()
+      process.waitUntilExit()
+      XCTAssertNotEqual(process.terminationStatus, 0)
+      XCTAssertTrue(
+        String(decoding: try errors.fileHandleForReading.readToEnd() ?? Data(), as: UTF8.self)
+          .contains("Unsupported registry version"))
+      XCTAssertNotNil(try fixture.registry.inspect(allocation.id).owners["task:" + allocation.id])
+      XCTAssertTrue(try isPresent(allocation.path))
+    }
+  }
+
+  private func legacyAllocation(_ fixture: Fixture, isChangedInode: Bool = false) throws
+    -> Allocation
+  {
     let allocation = try fixture.registry.start(
       branch: UUID().uuidString, repository: fixture.repository, provider: .git)
     let common = try canonical(

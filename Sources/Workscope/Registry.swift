@@ -143,7 +143,8 @@ public struct Registry: Sendable {
   {
     try withRegistry(stateDirectory) { store in
       let status = try cleanupPolicyStatus(repository, store: store)
-      try store.revokeRepositoryCleanupPolicy(status.policy?.repositoryIdentity ?? status.repositoryIdentity)
+      try store.revokeRepositoryCleanupPolicy(
+        status.policy?.repositoryIdentity ?? status.repositoryIdentity)
       return RepositoryCleanupPolicyStatus(
         repository: status.repository, repositoryIdentity: status.repositoryIdentity, policy: nil)
     }
