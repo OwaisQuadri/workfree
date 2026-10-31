@@ -12,10 +12,12 @@ MODE=${1:-start}
 
 PROJECT=$(pwd)
 PI_CONFIG_REPO=${PI_CONFIG_REPO:-OwaisQuadri/pi-config}
-PI_CONFIG_REF=${PI_CONFIG_REF:-main}
+# agent-hooks/ lives only on agent-hooks/cloud until that branch is merged into main.
+PI_CONFIG_REF=${PI_CONFIG_REF:-agent-hooks/cloud}
 AGENTS_CONFIG_REPO=${AGENTS_CONFIG_REPO:-OwaisQuadri/agents-config}
 # 1 = build command-guard, edit-time-check and affected-tests for Linux from source (needs Swift 6.4, clang, zsh, tree-sitter 0.27.1).
 BUILD_CHECKERS=${BUILD_CHECKERS:-0}
+TREE_SITTER_CLI_VERSION=${TREE_SITTER_CLI_VERSION:-0.27.1}
 CHECKERS_REF=${CHECKERS_REF:-linux-build}  # Linux port branch until merged to main
 HOOKS_SOURCE=${AGENT_HOOKS_SOURCE:-pi-config}
 HOOKS_SUBDIR=${AGENT_HOOKS_SUBDIR:-agent-hooks}
@@ -40,6 +42,13 @@ if [ "$BUILD_CHECKERS" = 1 ]; then
 	need swift "BUILD_CHECKERS=1 needs a Swift 6.4 Linux toolchain"; swift --version 2>&1 | grep -q 'Swift version 6.4' || die "need Swift 6.4"
 	need clang; need zsh; need rg; command -v fd >/dev/null || need fdfind
 	ls "${TREE_SITTER_PREFIX:-/usr/local}"/lib/libtree-sitter.so* >/dev/null 2>&1 || die "tree-sitter 0.27.1 not found under ${TREE_SITTER_PREFIX:-/usr/local}"
+	# tree-sitter CLI (edit-time-check tests run `tree-sitter generate`). Public npm package, token-free; skipped when present.
+	export PATH="$HOME/.local/bin:$PATH"
+	if [ "$(tree-sitter --version 2>/dev/null | cut -d' ' -f2)" != "$TREE_SITTER_CLI_VERSION" ]; then
+		need npm "needed for the tree-sitter CLI"
+		npm install --silent --global --prefix "$HOME/.local" "tree-sitter-cli@$TREE_SITTER_CLI_VERSION" || die "tree-sitter-cli $TREE_SITTER_CLI_VERSION install failed"
+		[ "$(tree-sitter --version 2>/dev/null | cut -d' ' -f2)" = "$TREE_SITTER_CLI_VERSION" ] || die "tree-sitter CLI $TREE_SITTER_CLI_VERSION not on PATH after install"
+	fi
 fi
 case "$MODE" in
 	install) echo "cloud-bootstrap: install checks passed (token-free; run 'start' at runtime)"; exit 0 ;;
@@ -51,11 +60,14 @@ esac
 [ -n "${PI_CONFIG_TOKEN:-}" ] || die "PI_CONFIG_TOKEN is not set. It is a RUNTIME secret: run 'bootstrap.sh start' from the agent session (Cursor start, Claude SessionStart), not from install/build."
 mkdir -p "$WORK"
 
+# The bootstrap's own git ignores global and system config: Cursor VMs set global url.*.insteadOf rules that
+# inject credentials into URLs. The VM's config stays untouched; only these commands skip it.
+bgit() { GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git "$@"; }
 # The token travels only in env-scoped git config for each command: never argv, URL, or .git/config.
 authed_git() {
 	local header
 	header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$PI_CONFIG_TOKEN" | base64 | tr -d '\n')"
-	GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" GIT_CONFIG_VALUE_0="$header" git "$@"
+	GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" GIT_CONFIG_VALUE_0="$header" bgit "$@"
 }
 
 # fetch repo dest [ref]: shallow clone, reused when the remote commit is unchanged. Sets CHANGED=1 when new.
@@ -63,17 +75,17 @@ fetch() {
 	local ref=${3:-main} want
 	want=$(authed_git ls-remote "https://github.com/$1.git" "refs/heads/$ref" | cut -f1)
 	[ -n "$want" ] || die "ls-remote of $1@$ref failed (check token scope)"
-	if [ "$(git -C "$2" rev-parse HEAD 2>/dev/null || true)" = "$want" ]; then CHANGED=0; return; fi
+	if [ "$(bgit -C "$2" rev-parse HEAD 2>/dev/null || true)" = "$want" ]; then CHANGED=0; return; fi
 	rm -rf "$2"; mkdir -p "$(dirname "$2")"
 	authed_git clone --quiet --depth 1 --branch "$ref" "https://github.com/$1.git" "$2" || die "clone of $1 failed (check token scope)"
-	[ -z "$(git -C "$2" config --get-regexp 'extraheader' || true)" ] || die "token leaked into git config"
-	case "$(git -C "$2" remote get-url origin)" in *@*) die "credential in remote URL";; esac
+	[ -z "$(bgit -C "$2" config --get-regexp 'extraheader' || true)" ] || die "token leaked into git config"
+	case "$(bgit -C "$2" remote get-url origin)" in *@*) die "credential in remote URL";; esac
 	CHANGED=1
 }
 # stamp name: true when the step already ran for these inputs; mark name records them.
 stamp() { [ -f "$WORK/.stamp-$1" ] && [ "$(cat "$WORK/.stamp-$1")" = "$2" ]; }
 mark() { printf '%s' "$2" > "$WORK/.stamp-$1"; }
-rev() { git -C "$1" rev-parse HEAD; }
+rev() { bgit -C "$1" rev-parse HEAD; }
 
 fetch "$PI_CONFIG_REPO" "$WORK/pi-config" "$PI_CONFIG_REF"
 fetch "$AGENTS_CONFIG_REPO" "$WORK/agents-config"
@@ -186,7 +198,8 @@ for (const [target, claude] of [[".cursor/mcp.json", false], [".mcp.json", true]
 }
 JS
 
-# Merge hook config: keep existing entries, add ours once (dedupe by command).
+# Merge hook config: keep foreign entries, add each guard once. An entry already running the same
+# .agent-hooks/hooks/<guard>.mjs (any spelling of the path) is replaced in place, so reruns never duplicate.
 node - "$PROJECT" <<'JS'
 const fs = require("fs"), path = require("path");
 const root = process.argv[2];
@@ -198,8 +211,10 @@ const merge = (target, template, cursor) => {
 	for (const [event, entries] of Object.entries(add.hooks)) {
 		const list = (cur.hooks[event] ??= []);
 		for (const entry of entries) {
-			const key = (e) => JSON.stringify(cursor ? e.command : [e.matcher ?? "", (e.hooks ?? []).map((h) => h.command)]);
-			if (!list.some((e) => key(e) === key(entry))) list.push(entry);
+			const script = (c) => /\/hooks\/[\w-]+\.mjs/.exec(String(c ?? ""))?.[0] ?? String(c);
+			const key = (e) => JSON.stringify(cursor ? script(e.command) : [e.matcher ?? "", (e.hooks ?? []).map((h) => script(h.command))]);
+			const at = list.findIndex((e) => key(e) === key(entry));
+			if (at === -1) list.push(entry); else list[at] = entry;
 		}
 	}
 	fs.mkdirSync(path.dirname(file), { recursive: true });
