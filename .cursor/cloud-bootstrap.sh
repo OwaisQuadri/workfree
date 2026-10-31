@@ -102,20 +102,11 @@ provision_toolchain() {
 			echo '#include <memory>' | clang++ -x c++ -fsyntax-only - || die "clang++ still cannot find <memory> after installing libstdc++-$gccv-dev"
 		fi
 	fi
-	if ! ls "$TREE_SITTER_PREFIX"/lib/libtree-sitter.so."${TREE_SITTER_VERSION%.*}"* >/dev/null 2>&1; then
-		echo "cloud-bootstrap: building libtree-sitter $TREE_SITTER_VERSION into $TREE_SITTER_PREFIX"
-		local tmp; tmp=$(mktemp -d)
-		curl -fsSL "https://github.com/tree-sitter/tree-sitter/archive/refs/tags/v$TREE_SITTER_VERSION.tar.gz" | tar xz -C "$tmp"
-		make -s -C "$tmp/tree-sitter-$TREE_SITTER_VERSION" PREFIX="$TREE_SITTER_PREFIX" >/dev/null
-		if [ -w "$TREE_SITTER_PREFIX" ] || [ "$TREE_SITTER_PREFIX" = "$HOME/.local" ]; then mkdir -p "$TREE_SITTER_PREFIX"; make -s -C "$tmp/tree-sitter-$TREE_SITTER_VERSION" PREFIX="$TREE_SITTER_PREFIX" install >/dev/null
-		else $SUDO make -s -C "$tmp/tree-sitter-$TREE_SITTER_VERSION" PREFIX="$TREE_SITTER_PREFIX" install >/dev/null; fi
-		{ [ "$(id -u)" = 0 ] || [ -n "$SUDO" ]; } && $SUDO ldconfig 2>/dev/null || true
-		rm -rf "$tmp"
-	fi
 	if ! swift --version 2>/dev/null | grep -q "Swift version $CHECKERS_SWIFT_VERSION"; then
 		echo "cloud-bootstrap: installing Swift $CHECKERS_SWIFT_VERSION with swiftly (into ~/.local/share/swiftly)"
 		local tmp; tmp=$(mktemp -d)
-		curl -fsSL "https://download.swift.org/swiftly/linux/swiftly-$(uname -m).tar.gz" | tar xz -C "$tmp"
+		local url="https://download.swift.org/swiftly/linux/swiftly-$(uname -m).tar.gz"; echo "cloud-bootstrap: fetching $url"
+		curl -fsSL "$url" | tar xz -C "$tmp"
 		export SWIFTLY_HOME_DIR=${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly} SWIFTLY_BIN_DIR=${SWIFTLY_BIN_DIR:-$HOME/.local/share/swiftly/bin}
 		"$tmp/swiftly" init --quiet-shell-followup --assume-yes --skip-install
 		# shellcheck disable=SC1091
@@ -124,6 +115,38 @@ provision_toolchain() {
 		hash -r; rm -rf "$tmp"
 	fi
 	[ "${APT_FAILED:-0}" = 0 ] || die "apt-get install failed (see dpkg errors above and /tmp/agent-hooks-apt.log)"
+}
+# libtree-sitter (C library the checkers link): its own optional step, after Swift, so a failed download cannot block Swift.
+# Source comes from the crates.io tarball of the tree-sitter crate (include/ + src/lib.c), falling back to the GitHub
+# source archive; built with cc directly (no Makefile in the crate) into $TREE_SITTER_PREFIX with a pkg-config file.
+build_libtree_sitter() {
+	local so="$TREE_SITTER_PREFIX/lib/libtree-sitter.so.${TREE_SITTER_VERSION%.*}"
+	[ -e "$so" ] && { echo "cloud-bootstrap: libtree-sitter $TREE_SITTER_VERSION already at $so"; return 0; }
+	local tmp src= url; tmp=$(mktemp -d)
+	for url in "https://static.crates.io/crates/tree-sitter/tree-sitter-$TREE_SITTER_VERSION.crate" \
+		"https://github.com/tree-sitter/tree-sitter/archive/refs/tags/v$TREE_SITTER_VERSION.tar.gz"; do
+		echo "cloud-bootstrap: fetching $url"
+		rm -rf "$tmp/x"; mkdir -p "$tmp/x"
+		if curl -fsSL --retry 2 "$url" | tar xz -C "$tmp/x" 2>/dev/null; then
+			src=$(find "$tmp/x" -path '*/include/tree_sitter/api.h' | head -1); src=${src%/include/tree_sitter/api.h}; [ -f "$src/src/lib.c" ] && break
+		fi
+		echo "cloud-bootstrap: fetch failed or no C sources: $url" >&2; src=
+	done
+	[ -n "$src" ] || { rm -rf "$tmp"; die "could not download libtree-sitter $TREE_SITTER_VERSION source"; }
+	echo "cloud-bootstrap: building libtree-sitter $TREE_SITTER_VERSION from $src into $TREE_SITTER_PREFIX"
+	local cc=${CC:-cc}; command -v "$cc" >/dev/null || cc=clang
+	local soname="libtree-sitter.so.${TREE_SITTER_VERSION%.*}" out="$tmp/out"
+	mkdir -p "$out/lib/pkgconfig" "$out/include"
+	"$cc" -O2 -fPIC -std=c11 -D_POSIX_C_SOURCE=200112L -D_DEFAULT_SOURCE -I"$src/include" -I"$src/src" -I"$src/src/wasm" -c "$src/src/lib.c" -o "$tmp/lib.o"
+	"$cc" -shared -Wl,-soname,"$soname" "$tmp/lib.o" -o "$out/lib/$soname"
+	ar rcs "$out/lib/libtree-sitter.a" "$tmp/lib.o"
+	ln -sf "$soname" "$out/lib/libtree-sitter.so"; ln -sf "$soname" "$out/lib/libtree-sitter.so.0"
+	cp -R "$src/include/tree_sitter" "$out/include/"
+	printf 'prefix=%s\nlibdir=${prefix}/lib\nincludedir=${prefix}/include\n\nName: tree-sitter\nDescription: An incremental parsing system for programming tools\nVersion: %s\nLibs: -L${libdir} -ltree-sitter\nCflags: -I${includedir}\n' "$TREE_SITTER_PREFIX" "$TREE_SITTER_VERSION" > "$out/lib/pkgconfig/tree-sitter.pc"
+	local run=; { [ -w "$TREE_SITTER_PREFIX" ] || [ "$TREE_SITTER_PREFIX" = "$HOME/.local" ]; } || run=$SUDO
+	$run mkdir -p "$TREE_SITTER_PREFIX"; $run cp -R "$out/." "$TREE_SITTER_PREFIX/"
+	{ [ "$(id -u)" = 0 ] || [ -n "$SUDO" ]; } && $SUDO ldconfig 2>/dev/null || true
+	rm -rf "$tmp"; echo "cloud-bootstrap: libtree-sitter $TREE_SITTER_VERSION at $TREE_SITTER_PREFIX/lib/$soname"
 }
 check_toolchain() {
 	command -v swift >/dev/null && swift --version 2>&1 | grep -q "Swift version $CHECKERS_SWIFT_VERSION" || die "need Swift $CHECKERS_SWIFT_VERSION on PATH"
@@ -151,6 +174,7 @@ install_tree_sitter_cli() {
 			*) die "no prebuilt tree-sitter CLI for $(uname -m)" ;;
 		esac
 		local url="https://github.com/tree-sitter/tree-sitter/releases/download/v$TREE_SITTER_CLI_VERSION/tree-sitter-linux-$arch.gz"
+		echo "cloud-bootstrap: fetching $url"
 		echo "cloud-bootstrap: downloading tree-sitter CLI $TREE_SITTER_CLI_VERSION ($arch) into $prefix/bin"
 		local tmp; tmp=$(mktemp)
 		curl -fsSL --retry 3 "$url" | gzip -dc > "$tmp" || { rm -f "$tmp"; die "tree-sitter CLI download failed: $url"; }
@@ -170,6 +194,7 @@ install_tree_sitter_cli() {
 }
 if [ "$BUILD_CHECKERS" = 1 ]; then
 	[ "$PROVISION_TOOLCHAIN" = 1 ] && soft "provision checker toolchain" provision_toolchain
+	[ "$PROVISION_TOOLCHAIN" = 1 ] && soft "libtree-sitter" build_libtree_sitter
 	[ -f "${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly}/env.sh" ] && . "${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly}/env.sh"
 	soft "checker toolchain check" check_toolchain
 	soft "tree-sitter CLI" install_tree_sitter_cli
