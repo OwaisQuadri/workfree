@@ -111,7 +111,19 @@ provision_toolchain() {
 		"$tmp/swiftly" init --quiet-shell-followup --assume-yes --skip-install
 		# shellcheck disable=SC1091
 		. "$SWIFTLY_HOME_DIR/env.sh"
-		swiftly install --use --assume-yes "$CHECKERS_SWIFT_VERSION"
+		# swiftly's signature check imports swift.org keys with gpg, which fails intermittently on fresh VMs: pre-import the
+		# keys and retry the install so Swift lands on the first bootstrap pass.
+		local attempt
+		for attempt in 1 2 3; do
+			echo "cloud-bootstrap: fetching https://www.swift.org/keys/all-keys.asc (attempt $attempt)"
+			curl -fsSL --retry 3 https://www.swift.org/keys/all-keys.asc | gpg --batch --quiet --import - && break
+			sleep $((attempt * 5))
+		done
+		for attempt in 1 2 3; do
+			swiftly install --use --assume-yes "$CHECKERS_SWIFT_VERSION" && break
+			[ "$attempt" = 3 ] && die "swiftly install $CHECKERS_SWIFT_VERSION failed 3 times"
+			echo "cloud-bootstrap: swiftly install failed (attempt $attempt); retrying" >&2; sleep $((attempt * 10))
+		done
 		hash -r; rm -rf "$tmp"
 	fi
 	[ "${APT_FAILED:-0}" = 0 ] || die "apt-get install failed (see dpkg errors above and /tmp/agent-hooks-apt.log)"
