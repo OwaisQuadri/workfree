@@ -81,6 +81,8 @@ export default async function wf(pi: ExtensionAPI) {
     }
     return [...ids];
   };
+  let shutdown: AbortController | undefined;
+  const shutdownSignals = new WeakSet<AbortSignal>();
   const execute = async (ctx: ExtensionContext, args: string[], signal?: AbortSignal) => {
     const ids = allocationIDs(ctx);
     const sessionID = ctx.sessionManager.getSessionId();
@@ -98,6 +100,7 @@ export default async function wf(pi: ExtensionAPI) {
     catch { failure = new Error("wf returned invalid JSON"); }
     if (result.code !== 0 || result.killed) failure = new Error(result.stderr || result.stdout || `wf failed with exit code ${result.code}`);
     let acquiredDetails = details;
+    if (failure && signal?.aborted && shutdownSignals.has(signal)) throw failure;
     if (failure) {
       const claims = await pi.exec(binary, [...contextArgs, "--json", "claim"]);
       if (claims.code !== 0 || claims.killed) throw new Error(`${failure.message}; conversation metadata reconciliation failed: ${claims.stderr}`);
@@ -117,24 +120,33 @@ export default async function wf(pi: ExtensionAPI) {
     return { result, details };
   };
   let timer: ReturnType<typeof setInterval> | undefined;
-  const sweep = async (ctx: ExtensionContext) => {
-    try { await execute(ctx, ["--json", "sweep"]); }
-    catch (error) { ctx.ui.notify(String(error), "error"); }
-  };
-  pi.on("session_start", async (_event, ctx) => {
+  const stop = () => {
     if (timer) clearInterval(timer);
     timer = undefined;
+    shutdown?.abort();
+    shutdown = undefined;
+  };
+  const sweep = async (ctx: ExtensionContext) => {
+    const signal = shutdown?.signal;
+    try { await execute(ctx, ["--json", "sweep"], signal); }
+    catch (error) { if (!signal?.aborted) ctx.ui.notify(String(error), "error"); }
+  };
+  pi.on("session_start", async (_event, ctx) => {
+    stop();
+    shutdown = new AbortController();
+    shutdownSignals.add(shutdown.signal);
     await execute(ctx, ["--json", "claim"]);
-    await sweep(ctx);
     let isSweeping = false;
-    timer = setInterval(async () => {
+    const sweepOnce = async () => {
       if (isSweeping) return;
       isSweeping = true;
       try { await sweep(ctx); } finally { isSweeping = false; }
-    }, 60_000);
+    };
+    void sweepOnce();
+    timer = setInterval(sweepOnce, 60_000);
     timer.unref();
   });
-  pi.on("session_shutdown", () => { if (timer) clearInterval(timer); timer = undefined; });
+  pi.on("session_shutdown", stop);
 
   pi.registerTool({
     name: "wf",
