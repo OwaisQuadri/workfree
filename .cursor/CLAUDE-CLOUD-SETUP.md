@@ -1,6 +1,11 @@
 # Claude Code (cloud) setup for agent-hooks
-- Environment variable: `PI_CONFIG_TOKEN` (read-only fine-grained PAT; runtime only).
-- Setup script (token-free): `bash .cursor/cloud-bootstrap.sh install`
-- Runtime: SessionStart hook in `.claude/settings.json` running `bash .cursor/cloud-bootstrap.sh start`.
-  It fails loudly without `PI_CONFIG_TOKEN`, and repeat runs are cheap (unchanged repos are skipped).
-- Guards installed by the first `start` apply from the next session (or after `/hooks` reload).
+- `.claude/settings.json` (committed) holds every guard plus a SessionStart hook (`startup|resume`) that runs
+  `.claude/session-start.sh`: `cloud-bootstrap.sh install` then `start`, only when `CLAUDE_CODE_REMOTE=true`.
+- Environment variable on the cloud environment (claude.ai/code, environment settings, Environment variables):
+  `PI_CONFIG_TOKEN=<read-only fine-grained PAT>`. Not a network secret: the agent proxy never adds secrets to GitHub
+  requests. Optional: `PRIVACY_IDENTIFIERS_TEXT` (one private identifier per line); without it the file starts empty.
+- Without the token the hook reports "AGENT HOOKS NOT INSTALLED" to you and to Claude, and the guards stay closed.
+- Guards fail closed: PreToolUse and UserPromptSubmit entries set `"onFailure": "block"` and end in `|| exit 2`, so until
+  `.agent-hooks/` exists every tool call and prompt is blocked. Bootstrap log: `/tmp/agent-hooks-bootstrap.log`.
+- One repository per session: Claude cloud does not load repo hooks in multi-repo sessions or project threads.
+- No setup script is needed; one would only speed things up (the environment is cached after setup, not after hooks).

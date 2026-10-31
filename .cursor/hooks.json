@@ -41,6 +41,10 @@
       {
         "command": "node .agent-hooks/hooks/scope-guard.mjs",
         "timeout": 30
+      },
+      {
+        "command": "node .agent-hooks/hooks/cli-help.mjs",
+        "timeout": 30
       }
     ],
     "beforeSubmitPrompt": [

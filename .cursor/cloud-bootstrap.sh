@@ -112,11 +112,29 @@ check_toolchain() {
 	ls "$TREE_SITTER_PREFIX"/lib/libtree-sitter.so* >/dev/null 2>&1 || die "tree-sitter $TREE_SITTER_VERSION not found under $TREE_SITTER_PREFIX"
 }
 # tree-sitter CLI (edit-time-check tests run `tree-sitter generate`). Public npm package, token-free; skipped when present.
+# It must be on the agent's PATH, not just this script's: with root or sudo it goes to /usr/local (bin on every PATH);
+# otherwise to ~/.local, and ~/.local/bin is added to ~/.profile and ~/.bashrc.
+TREE_SITTER_CLI_PREFIX=${TREE_SITTER_CLI_PREFIX:-}
 install_tree_sitter_cli() {
-	[ "$(tree-sitter --version 2>/dev/null | cut -d' ' -f2)" = "$TREE_SITTER_CLI_VERSION" ] && return 0
-	need npm "needed for the tree-sitter CLI"
-	npm install --silent --global --prefix "$HOME/.local" "tree-sitter-cli@$TREE_SITTER_CLI_VERSION" || die "tree-sitter-cli $TREE_SITTER_CLI_VERSION install failed"
-	[ "$(tree-sitter --version 2>/dev/null | cut -d' ' -f2)" = "$TREE_SITTER_CLI_VERSION" ] || die "tree-sitter CLI $TREE_SITTER_CLI_VERSION does not run after install: $(tree-sitter --version 2>&1 | head -1) (the prebuilt CLI needs glibc >= 2.39, e.g. Ubuntu 24.04)"
+	local prefix=$TREE_SITTER_CLI_PREFIX run=
+	if [ -z "$prefix" ]; then if [ "$(id -u)" = 0 ] || [ -n "$SUDO" ]; then prefix=/usr/local; else prefix=$HOME/.local; fi; fi
+	[ "$prefix" = /usr/local ] && [ "$(id -u)" != 0 ] && run=$SUDO
+	if [ "$("$prefix/bin/tree-sitter" --version 2>/dev/null | cut -d' ' -f2)" != "$TREE_SITTER_CLI_VERSION" ]; then
+		need npm "needed for the tree-sitter CLI"
+		echo "cloud-bootstrap: npm install tree-sitter-cli@$TREE_SITTER_CLI_VERSION into $prefix"
+		$run npm install --no-audit --no-fund --global --prefix "$prefix" "tree-sitter-cli@$TREE_SITTER_CLI_VERSION" >/dev/null || die "tree-sitter-cli $TREE_SITTER_CLI_VERSION install failed"
+	fi
+	# The npm bin is a node wrapper (#!/usr/bin/env node) around a native binary; link the binary itself so the CLI runs
+	# from any shell, with or without node on that shell's PATH.
+	local native="$prefix/lib/node_modules/tree-sitter-cli/tree-sitter"
+	[ -x "$native" ] && $run ln -sfn "$native" "$prefix/bin/tree-sitter"
+	if [ "$prefix" = "$HOME/.local" ]; then
+		for rc in "$HOME/.profile" "$HOME/.bashrc"; do grep -qF '.local/bin' "$rc" 2>/dev/null || printf '\nexport PATH="$HOME/.local/bin:$PATH"  # cloud-bootstrap: tree-sitter CLI\n' >> "$rc"; done
+	fi
+	hash -r
+	local found; found=$(tree-sitter --version 2>&1 | head -1)
+	[ "$(echo "$found" | cut -d' ' -f2)" = "$TREE_SITTER_CLI_VERSION" ] || die "tree-sitter CLI $TREE_SITTER_CLI_VERSION does not run after install: $found (the prebuilt CLI needs glibc >= 2.39, e.g. Ubuntu 24.04)"
+	echo "cloud-bootstrap: tree-sitter CLI $TREE_SITTER_CLI_VERSION at $(command -v tree-sitter)"
 }
 if [ "$BUILD_CHECKERS" = 1 ]; then
 	[ "$PROVISION_TOOLCHAIN" = 1 ] && soft "provision checker toolchain" provision_toolchain
@@ -221,6 +239,19 @@ merge(".cursor/hooks.json", "templates/cursor/.cursor/hooks.json", true);
 merge(".claude/settings.json", "templates/claude/.claude/settings.json", false);
 JS
 
+# edit-time-check's privacy rule reads ~/.config/privacy-lint/identifiers (or $PRIVACY_LINT_IDENTIFIERS); when the file is
+# missing every selected write fails with "Cannot read private identifier configuration" and the comment-shape guard
+# denies it as a checker error. The list is private, so it never comes from a repo: set PRIVACY_IDENTIFIERS_TEXT (one
+# identifier per line) as a runtime secret, or the file starts empty (generic privacy checks only). An existing file wins.
+ensure_privacy_identifiers() {
+	local file=${PRIVACY_LINT_IDENTIFIERS:-$HOME/.config/privacy-lint/identifiers}
+	[ -f "$file" ] && return 0
+	mkdir -p "$(dirname "$file")"; ( umask 077; printf '%s' "${PRIVACY_IDENTIFIERS_TEXT:-}" > "$file" )
+	if [ -n "${PRIVACY_IDENTIFIERS_TEXT:-}" ]; then echo "cloud-bootstrap: wrote $file from PRIVACY_IDENTIFIERS_TEXT"
+	else echo "cloud-bootstrap: WARNING created empty $file (set PRIVACY_IDENTIFIERS_TEXT to screen your private identifiers)" >&2; fi
+}
+ensure_privacy_identifiers
+
 # Linux checkers from the linux-build branches, built once per commit, then placed where the hooks look
 # (.agent-hooks/vendor/pi/agent/checkers, replacing the macOS binaries that cannot run here).
 build_checkers() {
@@ -278,6 +309,13 @@ verify_checkers() {
 	local verdict
 	verdict=$(printf '{"hook_event_name":"preToolUse","tool_name":"Shell","tool_input":{"command":"git status"},"cwd":"%s"}' "$PROJECT" | node .agent-hooks/hooks/command-guard.mjs 2>&1 || true)
 	case "$verdict" in *'"deny"'*|*'"ask"'*) echo "cloud-bootstrap: ERROR command-guard hook denies 'git status': $verdict" >&2; bad=1 ;; esac
+	# Comment-shape guard end to end: a bare TODO comment must be blocked by the comment-shape rule (not a checker error),
+	# and plain text must pass; a checker error here means a missing piece (parsers, config, identifiers file).
+	verdict=$(printf '{"hook_event_name":"preToolUse","tool_name":"Write","tool_input":{"file_path":"%s/.agent-hooks/verify.swift","contents":"// TODO\\n"},"cwd":"%s"}' "$PROJECT" "$PROJECT" | node .agent-hooks/hooks/comment-shape-guard.mjs 2>&1 || true)
+	case "$verdict" in *'comment-shape:'*) ;; *) echo "cloud-bootstrap: ERROR comment-shape guard did not block a TODO comment by policy: $verdict" >&2; bad=1 ;; esac
+	verdict=$(printf '{"hook_event_name":"preToolUse","tool_name":"Write","tool_input":{"file_path":"%s/.agent-hooks/verify.txt","contents":"plain text\\n"},"cwd":"%s"}' "$PROJECT" "$PROJECT" | node .agent-hooks/hooks/comment-shape-guard.mjs 2>&1 || true)
+	case "$verdict" in *'"deny"'*) echo "cloud-bootstrap: ERROR comment-shape guard denies plain text: $verdict" >&2; bad=1 ;; esac
+	if [ "$BUILD_CHECKERS" = 1 ]; then command -v tree-sitter >/dev/null || { echo "cloud-bootstrap: ERROR tree-sitter CLI is not on PATH" >&2; bad=1; }; fi
 	return $bad
 }
 if [ "$(uname -s)" = Linux ]; then
@@ -308,8 +346,8 @@ install_pi() {
 [ "$INSTALL_PI" = 1 ] && soft "pi install" install_pi
 
 # Instructions: pi-config AGENTS.md is used only when the project has none; Claude reads it via CLAUDE.md import.
-if [ ! -e AGENTS.md ] && [ -f "$WORK/pi-config/AGENTS.md" ]; then cp "$WORK/pi-config/AGENTS.md" AGENTS.md; fi
-if [ -e AGENTS.md ] && [ ! -e CLAUDE.md ]; then printf '@AGENTS.md\n' > CLAUDE.md; fi
+if [ ! -e AGENTS.md ] && [ -f "$WORK/pi-config/AGENTS.md" ]; then cp "$WORK/pi-config/AGENTS.md" AGENTS.md; GENERATED_EXCLUDES="${GENERATED_EXCLUDES:-} AGENTS.md"; fi
+if [ -e AGENTS.md ] && [ ! -e CLAUDE.md ]; then printf '@AGENTS.md\n' > CLAUDE.md; GENERATED_EXCLUDES="${GENERATED_EXCLUDES:-} CLAUDE.md"; fi
 
 # MCP: only allowlisted servers ($MCP_ALLOW) from pi-config mcp.json into .cursor/mcp.json and .mcp.json. Existing servers win; stdio servers
 # whose command is not installed here are skipped. Env values are copied, never printed.
@@ -342,7 +380,7 @@ soft "MCP merge" merge_mcp
 
 # Keep generated files out of the agent's diffs (local exclude, never committed).
 if [ -d .git ]; then
-	for p in .agent-hooks/ .cursor/skills/ .claude/skills/ .cursor/mcp.json .mcp.json; do grep -qxF "$p" .git/info/exclude 2>/dev/null || echo "$p" >> .git/info/exclude; done
+	for p in .agent-hooks/ .cursor/skills/ .claude/skills/ .cursor/mcp.json .mcp.json .swift-version ${GENERATED_EXCLUDES:-}; do grep -qxF "$p" .git/info/exclude 2>/dev/null || echo "$p" >> .git/info/exclude; done
 fi
 echo "cloud-bootstrap: done ($(ls "$SKILLS" | wc -l | tr -d ' ') skills, hooks from $HOOKS_SOURCE)"
 finish
