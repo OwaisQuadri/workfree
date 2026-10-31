@@ -13,7 +13,9 @@ if [ -z "${PI_CONFIG_TOKEN:-}" ]; then
 	exit 0
 fi
 log=/tmp/agent-hooks-bootstrap.log
-if BUILD_CHECKERS=1 bash .cursor/cloud-bootstrap.sh install >"$log" 2>&1 && BUILD_CHECKERS=1 bash .cursor/cloud-bootstrap.sh start >>"$log" 2>&1; then
+# install only checks the toolchain; run start (which installs the hooks) even if an optional install step failed.
+BUILD_CHECKERS=1 bash .cursor/cloud-bootstrap.sh install >"$log" 2>&1 || echo "cloud-bootstrap: ERROR install phase exited $?; running start anyway" >>"$log"
+if BUILD_CHECKERS=1 bash .cursor/cloud-bootstrap.sh start >>"$log" 2>&1; then
 	if grep -q 'ERROR' "$log"; then report "Agent hooks installed with errors (see $log): $(grep ERROR "$log" | head -5 | tr '\n' ' ')"; else report "Agent hooks installed ($log)."; fi
 else
 	report "AGENT HOOKS BOOTSTRAP FAILED (see $log): $(tail -5 "$log" | tr '\n' ' ') Guarded tool calls will be denied."

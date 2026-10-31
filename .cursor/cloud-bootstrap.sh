@@ -12,7 +12,9 @@ set +x
 trap 'echo "cloud-bootstrap: FAILED at line $LINENO" >&2' ERR
 MODE=${1:-start}
 
-PROJECT=$(pwd)
+# Claude Code cloud runs hooks with CLAUDE_PROJECT_DIR (e.g. /home/user/repo); honor it so the hooks land in <repo>/.agent-hooks.
+PROJECT=${CLAUDE_PROJECT_DIR:-$(pwd)}
+cd "$PROJECT"
 PI_CONFIG_REPO=${PI_CONFIG_REPO:-OwaisQuadri/pi-config}
 # agent-hooks/ lives only on agent-hooks/cloud until that branch is merged into main.
 PI_CONFIG_REF=${PI_CONFIG_REF:-agent-hooks/cloud}
@@ -158,6 +160,8 @@ fi
 finish() {
 	if [ ${#ERRORS[@]} -gt 0 ]; then
 		echo "cloud-bootstrap: ==== FAILED optional steps: ${ERRORS[*]} ====" >&2
+		# install mode only checks the toolchain; still exit 0 so a caller chaining `install && start` installs the hooks.
+		[ "$MODE" = install ] && { echo "cloud-bootstrap: optional toolchain steps failed; continue with start so the hooks still install" >&2; return 0; }
 		echo "cloud-bootstrap: hooks are installed, but guards that need a missing piece fail closed. Fix the steps above and rerun." >&2
 		exit 1
 	fi
