@@ -1,4 +1,11 @@
 {
+  "model": "claude-opus-5-5",
+  "effortLevel": "medium",
+  "modelSettings": {
+    "claude-opus-5-5": {
+      "effortLevel": "medium"
+    }
+  },
   "hooks": {
     "SessionStart": [
       {
