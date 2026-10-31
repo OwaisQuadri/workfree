@@ -1,4 +1,4 @@
 {
-  "install": "bash .cursor/cloud-bootstrap.sh install",
-  "start": "bash .cursor/cloud-bootstrap.sh start"
+  "install": "BUILD_CHECKERS=1 bash .cursor/cloud-bootstrap.sh install",
+  "start": "BUILD_CHECKERS=1 bash .cursor/cloud-bootstrap.sh start"
 }
