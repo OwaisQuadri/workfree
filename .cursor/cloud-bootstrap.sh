@@ -62,6 +62,21 @@ if [ -z "${TREE_SITTER_PREFIX:-}" ]; then
 	if ls /usr/local/lib/libtree-sitter.so* >/dev/null 2>&1 || [ -w /usr/local/lib ] || [ -n "$SUDO" ]; then TREE_SITTER_PREFIX=/usr/local; else TREE_SITTER_PREFIX=$HOME/.local; fi
 fi
 export TREE_SITTER_PREFIX
+# apt_install pkgs...: noninteractive (tzdata preseeded to Etc/UTC), repairs a half-configured dpkg and retries once,
+# and prints dpkg's own error text to the log on failure.
+apt_install() {
+	export DEBIAN_FRONTEND=noninteractive TZ=${TZ:-Etc/UTC}
+	[ -e /etc/localtime ] || $SUDO ln -sf /usr/share/zoneinfo/Etc/UTC /etc/localtime 2>/dev/null || true
+	printf 'tzdata tzdata/Areas select Etc\ntzdata tzdata/Zones/Etc select UTC\n' | $SUDO debconf-set-selections 2>/dev/null || true
+	local out=/tmp/agent-hooks-apt.log try
+	for try in 1 2; do
+		$SUDO env DEBIAN_FRONTEND=noninteractive TZ="$TZ" dpkg --configure -a >>"$out" 2>&1 || true
+		if $SUDO apt-get update -qq >>"$out" 2>&1 && $SUDO env DEBIAN_FRONTEND=noninteractive TZ="$TZ" apt-get install -y -qq --no-install-recommends -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>"$out" 2>&1; then return 0; fi
+		echo "cloud-bootstrap: apt-get install attempt $try failed; dpkg/apt errors:" >&2
+		grep -iE '^(E:|dpkg:)|error|failed' "$out" | tail -20 >&2 || true
+	done
+	return 1
+}
 has_fd() { command -v fd >/dev/null || command -v fdfind >/dev/null; }
 provision_toolchain() {
 	if [ "$(uname -s)" = Linux ] && command -v apt-get >/dev/null; then
@@ -74,15 +89,16 @@ provision_toolchain() {
 		if [ ${#pkgs[@]} -gt 0 ]; then
 			[ "$(id -u)" = 0 ] || [ -n "$SUDO" ] || die "missing ${pkgs[*]} and no root/sudo to apt-get them"
 			echo "cloud-bootstrap: apt-get install ${pkgs[*]}"
-			$SUDO apt-get update -qq && DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq --no-install-recommends "${pkgs[@]}" >/dev/null
+			# Keep going on failure so Swift (swiftly) still installs; check_toolchain reports what is still missing.
+			apt_install "${pkgs[@]}" || { APT_FAILED=1; echo "cloud-bootstrap: ERROR apt-get install failed; continuing with libtree-sitter and Swift" >&2; }
 		fi
 		# C++ standard library headers for the GCC install clang selects (the highest /usr/lib/gcc/<triple>/N, which may lack
 		# libstdc++-N-dev, e.g. gcc-14 runtime present but only libstdc++-13-dev): swift-crypto's CCryptoBoringSSL needs <memory>.
-		local gccv; gccv=$(clang -v 2>&1 | sed -n 's|^Selected GCC installation: .*/\([0-9][0-9]*\)$|\1|p')
+		local gccv=; command -v clang >/dev/null && gccv=$(clang -v 2>&1 | sed -n 's|^Selected GCC installation: .*/\([0-9][0-9]*\)$|\1|p')
 		if [ -n "$gccv" ] && ! echo '#include <memory>' | clang++ -x c++ -fsyntax-only - 2>/dev/null; then
 			[ "$(id -u)" = 0 ] || [ -n "$SUDO" ] || die "C++ headers missing (need libstdc++-$gccv-dev) and no root/sudo to apt-get them"
 			echo "cloud-bootstrap: apt-get install libstdc++-$gccv-dev libgcc-$gccv-dev (C++ headers for clang's GCC $gccv)"
-			$SUDO apt-get update -qq && DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq --no-install-recommends "libstdc++-$gccv-dev" "libgcc-$gccv-dev" >/dev/null
+			apt_install "libstdc++-$gccv-dev" "libgcc-$gccv-dev" || APT_FAILED=1
 			echo '#include <memory>' | clang++ -x c++ -fsyntax-only - || die "clang++ still cannot find <memory> after installing libstdc++-$gccv-dev"
 		fi
 	fi
@@ -107,6 +123,7 @@ provision_toolchain() {
 		swiftly install --use --assume-yes "$CHECKERS_SWIFT_VERSION"
 		hash -r; rm -rf "$tmp"
 	fi
+	[ "${APT_FAILED:-0}" = 0 ] || die "apt-get install failed (see dpkg errors above and /tmp/agent-hooks-apt.log)"
 }
 check_toolchain() {
 	command -v swift >/dev/null && swift --version 2>&1 | grep -q "Swift version $CHECKERS_SWIFT_VERSION" || die "need Swift $CHECKERS_SWIFT_VERSION on PATH"
@@ -283,7 +300,13 @@ if command -v ld.gold >/dev/null && ! ld.gold --no-warn-rwx-segments --version >
 	echo "cloud-bootstrap: ld.gold $(ld.gold --version | head -1 | awk '{print $NF}') rejects --no-warn-rwx-segments; checkers link through $shim/ld.gold-compat"
 fi
 # swift may be a swiftly proxy, so locate swift-syntax host libs from the real toolchain's resource dir.
-[ -n "${SWIFT_HOST_LIB:-}" ] || { SWIFT_HOST_LIB="$(swiftc -print-target-info | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).paths.runtimeResourcePath))')/host"; export SWIFT_HOST_LIB; }
+if [ -z "${SWIFT_HOST_LIB:-}" ]; then
+	command -v swiftc >/dev/null || die "swiftc not found on PATH (Swift $CHECKERS_SWIFT_VERSION was not installed; see 'provision checker toolchain' above)"
+	target_info=$(swiftc -print-target-info 2>&1) || die "swiftc -print-target-info failed: $target_info"
+	[ -n "$target_info" ] || die "swiftc -print-target-info printed nothing"
+	resource=$(printf '%s' "$target_info" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).paths.runtimeResourcePath)}catch(e){console.error("not JSON: "+s.slice(0,200));process.exit(1)}})') || die "could not read runtimeResourcePath from swiftc -print-target-info"
+	SWIFT_HOST_LIB="$resource/host"; export SWIFT_HOST_LIB
+fi
 	mkdir -p "$CHECKERS_OUT/checkers" "$HOME/.local/bin"
 	fetch OwaisQuadri/edit-time-check "$WORK/edit-time-check" "$CHECKERS_REF"
 	if ! stamp edit-time-check "$(rev "$WORK/edit-time-check")"; then
@@ -332,6 +355,11 @@ verify_checkers() {
 	case "$verdict" in *'comment-shape:'*) ;; *) echo "cloud-bootstrap: ERROR comment-shape guard did not block a TODO comment by policy: $verdict" >&2; bad=1 ;; esac
 	verdict=$(printf '{"hook_event_name":"preToolUse","tool_name":"Write","tool_input":{"file_path":"%s/.agent-hooks/verify.txt","contents":"plain text\\n"},"cwd":"%s"}' "$PROJECT" "$PROJECT" | node .agent-hooks/hooks/comment-shape-guard.mjs 2>&1 || true)
 	case "$verdict" in *'"deny"'*) echo "cloud-bootstrap: ERROR comment-shape guard denies plain text: $verdict" >&2; bad=1 ;; esac
+	# Test-runner guard end to end: an ordinary command passes, a non-test build (swift build) is denied by its rule.
+	verdict=$(printf '{"hook_event_name":"preToolUse","tool_name":"Shell","tool_input":{"command":"git status"},"cwd":"%s"}' "$PROJECT" | node .agent-hooks/hooks/test-runner-guard.mjs 2>&1 || true)
+	case "$verdict" in *'"deny"'*) echo "cloud-bootstrap: ERROR test-runner guard denies 'git status': $verdict" >&2; bad=1 ;; esac
+	verdict=$(printf '{"hook_event_name":"preToolUse","tool_name":"Shell","tool_input":{"command":"swift build"},"cwd":"%s"}' "$PROJECT" | node .agent-hooks/hooks/test-runner-guard.mjs 2>&1 || true)
+	case "$verdict" in *'"deny"'*) ;; *) echo "cloud-bootstrap: ERROR test-runner guard did not deny 'swift build': $verdict" >&2; bad=1 ;; esac
 	if [ "$BUILD_CHECKERS" = 1 ]; then command -v tree-sitter >/dev/null || { echo "cloud-bootstrap: ERROR tree-sitter CLI is not on PATH" >&2; bad=1; }; fi
 	return $bad
 }
