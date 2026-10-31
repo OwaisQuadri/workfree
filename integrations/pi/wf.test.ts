@@ -22,13 +22,15 @@ async function fixture(isApproved = false) {
   const failures: Error[] = [];
   const executables: string[] = [];
   const confirmations: string[] = [];
+  const signals: (AbortSignal | undefined)[] = [];
+  const gate: { sweep?: Promise<void> } = {};
   const result = { code: 0, killed: false, stdout: '{"id":"allocation"}', stderr: "" };
   const commands = new Map<string, any>();
   const handlers = new Map<string, any>();
   const ctx = {
     cwd: "/repo", hasUI: true,
     sessionManager: { getSessionId: () => "conversation", getEntries: () => entries },
-    ui: { confirm: async (title: string) => { confirmations.push(title); return isApproved; }, notify: () => undefined },
+    ui: { confirm: async (title: string) => { confirmations.push(title); return isApproved; }, notify: (_message: string): void => undefined },
   };
   const original = process.env.WF_BIN;
   process.env.WF_BIN = "/fixture/wf";
@@ -38,8 +40,9 @@ async function fixture(isApproved = false) {
       registerCommand(name: string, definition: any) { commands.set(name, definition); },
       on(name: string, handler: any) { handlers.set(name, handler); },
       appendEntry(customType: string, data: unknown) { entries.push({ type: "custom", customType, data }); },
-      async exec(command: string, args: string[]) {
-        executables.push(command); rawCalls.push(args); calls.push(args.slice(8));
+      async exec(command: string, args: string[], options?: { signal?: AbortSignal }) {
+        executables.push(command); rawCalls.push(args); calls.push(args.slice(8)); signals.push(options?.signal);
+        if (gate.sweep && args.includes("sweep")) await gate.sweep;
         if (failures.length) throw failures.shift();
         return result;
       },
@@ -48,7 +51,7 @@ async function fixture(isApproved = false) {
     if (original === undefined) delete process.env.WF_BIN;
     else process.env.WF_BIN = original;
   }
-  return { calls, rawCalls, entries, failures, executables, confirmations, result, commands, handlers, ctx, tool, run: (input: any) => tool.execute("call", input, undefined, undefined, ctx) };
+  return { calls, rawCalls, entries, failures, executables, confirmations, signals, gate, result, commands, handlers, ctx, tool, run: (input: any) => tool.execute("call", input, undefined, undefined, ctx) };
 }
 
 test("claim without an id reaches the command and preserves explicit targets", async () => {
@@ -157,6 +160,25 @@ test("session startup and timer evaluate saved policies without prompting or aut
   assert.ok(f.calls.every((args) => !args.some((arg) => ["authorize-cleanup", "cleanup-policy", "--allow-cleanup"].includes(arg))));
   await f.handlers.get("session_shutdown")({}, f.ctx);
   assert.equal(isCleared, true);
+});
+
+test("startup returns before a slow sweep finishes and shutdown aborts that sweep", async () => {
+  const f = await fixture();
+  let release!: () => void;
+  f.gate.sweep = new Promise((resolve) => { release = resolve; });
+  const notices: string[] = [];
+  f.ctx.ui.notify = (message: string) => { notices.push(message); };
+  await f.handlers.get("session_start")({}, f.ctx);
+  assert.deepEqual(f.calls, [["--json", "claim"], ["--json", "sweep"]]);
+  const sweepSignal = f.signals[1];
+  assert.equal(sweepSignal?.aborted, false);
+  await f.handlers.get("session_shutdown")({}, f.ctx);
+  assert.equal(sweepSignal?.aborted, true);
+  f.result.code = 1;
+  release();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(f.calls, [["--json", "claim"], ["--json", "sweep"]]);
+  assert.deepEqual(notices, []);
 });
 
 test("startup never sweeps when conversation acquisition fails", async () => {
