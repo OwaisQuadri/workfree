@@ -82,6 +82,7 @@ export default async function wf(pi: ExtensionAPI) {
     return [...ids];
   };
   let shutdown: AbortController | undefined;
+  const shutdownSignals = new WeakSet<AbortSignal>();
   const execute = async (ctx: ExtensionContext, args: string[], signal?: AbortSignal) => {
     const ids = allocationIDs(ctx);
     const sessionID = ctx.sessionManager.getSessionId();
@@ -99,7 +100,7 @@ export default async function wf(pi: ExtensionAPI) {
     catch { failure = new Error("wf returned invalid JSON"); }
     if (result.code !== 0 || result.killed) failure = new Error(result.stderr || result.stdout || `wf failed with exit code ${result.code}`);
     let acquiredDetails = details;
-    if (failure && signal?.aborted) throw failure;
+    if (failure && signal?.aborted && shutdownSignals.has(signal)) throw failure;
     if (failure) {
       const claims = await pi.exec(binary, [...contextArgs, "--json", "claim"]);
       if (claims.code !== 0 || claims.killed) throw new Error(`${failure.message}; conversation metadata reconciliation failed: ${claims.stderr}`);
@@ -133,6 +134,7 @@ export default async function wf(pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     stop();
     shutdown = new AbortController();
+    shutdownSignals.add(shutdown.signal);
     await execute(ctx, ["--json", "claim"]);
     let isSweeping = false;
     const sweepOnce = async () => {

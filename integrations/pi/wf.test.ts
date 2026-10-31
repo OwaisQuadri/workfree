@@ -23,7 +23,7 @@ async function fixture(isApproved = false) {
   const executables: string[] = [];
   const confirmations: string[] = [];
   const signals: (AbortSignal | undefined)[] = [];
-  const gate: { sweep?: Promise<void> } = {};
+  const gate: { sweep?: Promise<void>; onExec?: (args: string[]) => void } = {};
   const result = { code: 0, killed: false, stdout: '{"id":"allocation"}', stderr: "" };
   const commands = new Map<string, any>();
   const handlers = new Map<string, any>();
@@ -42,6 +42,7 @@ async function fixture(isApproved = false) {
       appendEntry(customType: string, data: unknown) { entries.push({ type: "custom", customType, data }); },
       async exec(command: string, args: string[], options?: { signal?: AbortSignal }) {
         executables.push(command); rawCalls.push(args); calls.push(args.slice(8)); signals.push(options?.signal);
+        gate.onExec?.(args);
         if (gate.sweep && args.includes("sweep")) await gate.sweep;
         if (failures.length) throw failures.shift();
         return result;
@@ -215,6 +216,22 @@ test("interrupted structured commands reconcile acquired targets before reportin
   await assert.rejects(f.run({ action: "inspect", id: "acquired-before-error" }), /interrupted after acquisition/);
   assert.deepEqual(f.calls, [["--json", "inspect", "acquired-before-error"], ["--json", "claim"]]);
   assert.deepEqual(f.entries.at(-1).data, ["acquired-before-error"]);
+});
+
+test("cancelled structured commands still reconcile acquired targets", async () => {
+  const f = await fixture();
+  const cancel = new AbortController();
+  f.gate.onExec = (args) => { if (args.includes("inspect")) cancel.abort(); };
+  f.failures.push(new Error("cancelled after acquisition"));
+  f.result.stdout = JSON.stringify([{
+    id: "acquired-before-cancel", conversationClaims: [{ sessionID: "conversation", processID: process.pid }],
+  }]);
+  await assert.rejects(
+    f.tool.execute("call", { action: "inspect", id: "acquired-before-cancel" }, cancel.signal, undefined, f.ctx),
+    /cancelled after acquisition/,
+  );
+  assert.deepEqual(f.calls, [["--json", "inspect", "acquired-before-cancel"], ["--json", "claim"]]);
+  assert.deepEqual(f.entries.at(-1).data, ["acquired-before-cancel"]);
 });
 
 test("malformed non-transcript metadata blocks cleanup instead of dropping protection", async () => {
