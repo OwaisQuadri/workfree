@@ -111,7 +111,8 @@ check_toolchain() {
 	need clang; need zsh; need rg; has_fd || die "fd/fdfind missing"
 	ls "$TREE_SITTER_PREFIX"/lib/libtree-sitter.so* >/dev/null 2>&1 || die "tree-sitter $TREE_SITTER_VERSION not found under $TREE_SITTER_PREFIX"
 }
-# tree-sitter CLI (edit-time-check tests run `tree-sitter generate`). Public npm package, token-free; skipped when present.
+# tree-sitter CLI (edit-time-check tests run `tree-sitter generate`). Prebuilt release binary from GitHub (public, token-free,
+# no npm/node needed); skipped when the right version is present.
 # It must be on the agent's PATH, not just this script's: with root or sudo it goes to /usr/local (bin on every PATH);
 # otherwise to ~/.local, and ~/.local/bin is added to ~/.profile and ~/.bashrc.
 TREE_SITTER_CLI_PREFIX=${TREE_SITTER_CLI_PREFIX:-}
@@ -120,16 +121,28 @@ install_tree_sitter_cli() {
 	if [ -z "$prefix" ]; then if [ "$(id -u)" = 0 ] || [ -n "$SUDO" ]; then prefix=/usr/local; else prefix=$HOME/.local; fi; fi
 	[ "$prefix" = /usr/local ] && [ "$(id -u)" != 0 ] && run=$SUDO
 	if [ "$("$prefix/bin/tree-sitter" --version 2>/dev/null | cut -d' ' -f2)" != "$TREE_SITTER_CLI_VERSION" ]; then
-		need npm "needed for the tree-sitter CLI"
-		echo "cloud-bootstrap: npm install tree-sitter-cli@$TREE_SITTER_CLI_VERSION into $prefix"
-		$run npm install --no-audit --no-fund --global --prefix "$prefix" "tree-sitter-cli@$TREE_SITTER_CLI_VERSION" >/dev/null || die "tree-sitter-cli $TREE_SITTER_CLI_VERSION install failed"
+		need curl "needed for the tree-sitter CLI"; need gzip "needed for the tree-sitter CLI"
+		local arch
+		case "$(uname -m)" in
+			x86_64|amd64) arch=x64 ;;
+			aarch64|arm64) arch=arm64 ;;
+			armv7l|armv6l) arch=arm ;;
+			i386|i686) arch=x86 ;;
+			ppc64le|ppc64) arch=powerpc64 ;;
+			*) die "no prebuilt tree-sitter CLI for $(uname -m)" ;;
+		esac
+		local url="https://github.com/tree-sitter/tree-sitter/releases/download/v$TREE_SITTER_CLI_VERSION/tree-sitter-linux-$arch.gz"
+		echo "cloud-bootstrap: downloading tree-sitter CLI $TREE_SITTER_CLI_VERSION ($arch) into $prefix/bin"
+		local tmp; tmp=$(mktemp)
+		curl -fsSL --retry 3 "$url" | gzip -dc > "$tmp" || { rm -f "$tmp"; die "tree-sitter CLI download failed: $url"; }
+		chmod 755 "$tmp"
+		$run mkdir -p "$prefix/bin"
+		$run rm -f "$prefix/bin/tree-sitter"  # may be a symlink left by an earlier npm install
+		$run install -m 755 "$tmp" "$prefix/bin/tree-sitter"; rm -f "$tmp"
 	fi
-	# The npm bin is a node wrapper (#!/usr/bin/env node) around a native binary; link the binary itself so the CLI runs
-	# from any shell, with or without node on that shell's PATH.
-	local native="$prefix/lib/node_modules/tree-sitter-cli/tree-sitter"
-	[ -x "$native" ] && $run ln -sfn "$native" "$prefix/bin/tree-sitter"
 	if [ "$prefix" = "$HOME/.local" ]; then
 		for rc in "$HOME/.profile" "$HOME/.bashrc"; do grep -qF '.local/bin' "$rc" 2>/dev/null || printf '\nexport PATH="$HOME/.local/bin:$PATH"  # cloud-bootstrap: tree-sitter CLI\n' >> "$rc"; done
+		case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac
 	fi
 	hash -r
 	local found; found=$(tree-sitter --version 2>&1 | head -1)
