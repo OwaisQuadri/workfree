@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "command": "node .agent-hooks/hooks/command-guard.mjs",
+        "timeout": 30
+      },
+      {
+        "command": "node .agent-hooks/hooks/test-runner-guard.mjs",
+        "timeout": 30
+      },
+      {
+        "command": "node .agent-hooks/hooks/cli-help.mjs",
+        "timeout": 30
+      },
+      {
+        "command": "node .agent-hooks/hooks/scope-guard.mjs",
+        "timeout": 30
+      },
+      {
+        "command": "node .agent-hooks/hooks/comment-shape-guard.mjs",
+        "timeout": 30
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "node .agent-hooks/hooks/scope-guard.mjs",
+        "timeout": 30
+      },
+      {
+        "command": "node .agent-hooks/hooks/comment-shape-guard.mjs",
+        "timeout": 30
+      },
+      {
+        "command": "node .agent-hooks/hooks/cli-help.mjs",
+        "timeout": 30
+      }
+    ],
+    "postToolUseFailure": [
+      {
+        "command": "node .agent-hooks/hooks/scope-guard.mjs",
+        "timeout": 30
+      }
+    ],
+    "beforeSubmitPrompt": [
+      {
+        "command": "node .agent-hooks/hooks/scope-guard.mjs",
+        "timeout": 30
+      },
+      {
+        "command": "node .agent-hooks/hooks/repetition-guard.mjs",
+        "timeout": 30
+      }
+    ],
+    "afterAgentResponse": [
+      {
+        "command": "node .agent-hooks/hooks/repetition-guard.mjs",
+        "timeout": 30
+      }
+    ],
+    "afterAgentThought": [
+      {
+        "command": "node .agent-hooks/hooks/repetition-guard.mjs",
+        "timeout": 30
+      }
+    ],
+    "stop": [
+      {
+        "command": "node .agent-hooks/hooks/repetition-guard.mjs",
+        "timeout": 30
+      }
+    ],
+    "preCompact": [
+      {
+        "command": "node .agent-hooks/hooks/cli-help.mjs",
+        "timeout": 30
+      }
+    ]
+  }
+}

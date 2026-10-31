@@ -74,6 +74,15 @@ provision_toolchain() {
 			echo "cloud-bootstrap: apt-get install ${pkgs[*]}"
 			$SUDO apt-get update -qq && DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq --no-install-recommends "${pkgs[@]}" >/dev/null
 		fi
+		# C++ standard library headers for the GCC install clang selects (the highest /usr/lib/gcc/<triple>/N, which may lack
+		# libstdc++-N-dev, e.g. gcc-14 runtime present but only libstdc++-13-dev): swift-crypto's CCryptoBoringSSL needs <memory>.
+		local gccv; gccv=$(clang -v 2>&1 | sed -n 's|^Selected GCC installation: .*/\([0-9][0-9]*\)$|\1|p')
+		if [ -n "$gccv" ] && ! echo '#include <memory>' | clang++ -x c++ -fsyntax-only - 2>/dev/null; then
+			[ "$(id -u)" = 0 ] || [ -n "$SUDO" ] || die "C++ headers missing (need libstdc++-$gccv-dev) and no root/sudo to apt-get them"
+			echo "cloud-bootstrap: apt-get install libstdc++-$gccv-dev libgcc-$gccv-dev (C++ headers for clang's GCC $gccv)"
+			$SUDO apt-get update -qq && DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq --no-install-recommends "libstdc++-$gccv-dev" "libgcc-$gccv-dev" >/dev/null
+			echo '#include <memory>' | clang++ -x c++ -fsyntax-only - || die "clang++ still cannot find <memory> after installing libstdc++-$gccv-dev"
+		fi
 	fi
 	if ! ls "$TREE_SITTER_PREFIX"/lib/libtree-sitter.so."${TREE_SITTER_VERSION%.*}"* >/dev/null 2>&1; then
 		echo "cloud-bootstrap: building libtree-sitter $TREE_SITTER_VERSION into $TREE_SITTER_PREFIX"
