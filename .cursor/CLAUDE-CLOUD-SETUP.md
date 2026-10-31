@@ -9,3 +9,4 @@
   `.agent-hooks/` exists every tool call and prompt is blocked. Bootstrap log: `/tmp/agent-hooks-bootstrap.log`.
 - One repository per session: Claude cloud does not load repo hooks in multi-repo sessions or project threads.
 - No setup script is needed; one would only speed things up (the environment is cached after setup, not after hooks).
+- Cursor (local and cloud) imports `.claude/settings.json` as third-party hooks. Every guard entry there starts with `[ -n "$CURSOR_VERSION$CURSOR_PROJECT_DIR" ] && exit 0` so Cursor skips them (it runs the same guards from `.cursor/hooks.json`, which fail open until `.agent-hooks/` exists); otherwise the fail-closed `|| exit 2` UserPromptSubmit guard blocks a Cursor cloud agent's first prompt.

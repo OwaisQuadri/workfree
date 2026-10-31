@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agent-hooks/hooks/cli-help.mjs",
+            "command": "[ -n \"${CURSOR_VERSION:-}${CURSOR_PROJECT_DIR:-}\" ] && exit 0; cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agent-hooks/hooks/cli-help.mjs",
             "timeout": 30
           }
         ]
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agent-hooks/hooks/command-guard.mjs || exit 2",
+            "command": "[ -n \"${CURSOR_VERSION:-}${CURSOR_PROJECT_DIR:-}\" ] && exit 0; cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agent-hooks/hooks/command-guard.mjs || exit 2",
             "timeout": 30,
             "onFailure": "block"
           }
@@ -39,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agent-hooks/hooks/test-runner-guard.mjs || exit 2",
+            "command": "[ -n \"${CURSOR_VERSION:-}${CURSOR_PROJECT_DIR:-}\" ] && exit 0; cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agent-hooks/hooks/test-runner-guard.mjs || exit 2",
             "timeout": 30,
             "onFailure": "block"
           }
@@ -50,7 +50,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agent-hooks/hooks/cli-help.mjs || exit 2",
+            "command": "[ -n \"${CURSOR_VERSION:-}${CURSOR_PROJECT_DIR:-}\" ] && exit 0; cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agent-hooks/hooks/cli-help.mjs || exit 2",
             "timeout": 30,
             "onFailure": "block"
           }
@@ -61,7 +61,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agent-hooks/hooks/scope-guard.mjs || exit 2",
+            "command": "[ -n \"${CURSOR_VERSION:-}${CURSOR_PROJECT_DIR:-}\" ] && exit 0; cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agent-hooks/hooks/scope-guard.mjs || exit 2",
             "timeout": 30,
             "onFailure": "block"
           }
@@ -72,7 +72,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agent-hooks/hooks/comment-shape-guard.mjs || exit 2",
+            "command": "[ -n \"${CURSOR_VERSION:-}${CURSOR_PROJECT_DIR:-}\" ] && exit 0; cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agent-hooks/hooks/comment-shape-guard.mjs || exit 2",
             "timeout": 30,
             "onFailure": "block"
           }
@@ -85,7 +85,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agent-hooks/hooks/scope-guard.mjs",
+            "command": "[ -n \"${CURSOR_VERSION:-}${CURSOR_PROJECT_DIR:-}\" ] && exit 0; cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agent-hooks/hooks/scope-guard.mjs",
             "timeout": 30
           }
         ]
@@ -95,7 +95,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agent-hooks/hooks/comment-shape-guard.mjs",
+            "command": "[ -n \"${CURSOR_VERSION:-}${CURSOR_PROJECT_DIR:-}\" ] && exit 0; cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agent-hooks/hooks/comment-shape-guard.mjs",
             "timeout": 30
           }
         ]
@@ -105,7 +105,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agent-hooks/hooks/cli-help.mjs",
+            "command": "[ -n \"${CURSOR_VERSION:-}${CURSOR_PROJECT_DIR:-}\" ] && exit 0; cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agent-hooks/hooks/cli-help.mjs",
             "timeout": 30
           }
         ]
@@ -117,7 +117,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agent-hooks/hooks/scope-guard.mjs",
+            "command": "[ -n \"${CURSOR_VERSION:-}${CURSOR_PROJECT_DIR:-}\" ] && exit 0; cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agent-hooks/hooks/scope-guard.mjs",
             "timeout": 30
           }
         ]
@@ -127,7 +127,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agent-hooks/hooks/cli-help.mjs",
+            "command": "[ -n \"${CURSOR_VERSION:-}${CURSOR_PROJECT_DIR:-}\" ] && exit 0; cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agent-hooks/hooks/cli-help.mjs",
             "timeout": 30
           }
         ]
@@ -139,7 +139,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agent-hooks/hooks/scope-guard.mjs || exit 2",
+            "command": "[ -n \"${CURSOR_VERSION:-}${CURSOR_PROJECT_DIR:-}\" ] && exit 0; cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agent-hooks/hooks/scope-guard.mjs || exit 2",
             "timeout": 30,
             "onFailure": "block"
           }
@@ -150,7 +150,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agent-hooks/hooks/repetition-guard.mjs || exit 2",
+            "command": "[ -n \"${CURSOR_VERSION:-}${CURSOR_PROJECT_DIR:-}\" ] && exit 0; cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agent-hooks/hooks/repetition-guard.mjs || exit 2",
             "timeout": 30,
             "onFailure": "block"
           }
@@ -163,7 +163,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agent-hooks/hooks/repetition-guard.mjs",
+            "command": "[ -n \"${CURSOR_VERSION:-}${CURSOR_PROJECT_DIR:-}\" ] && exit 0; cd \"${CLAUDE_PROJECT_DIR:-.}\" && node .agent-hooks/hooks/repetition-guard.mjs",
             "timeout": 30
           }
         ]
