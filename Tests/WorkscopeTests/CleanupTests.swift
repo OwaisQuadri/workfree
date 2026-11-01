@@ -52,6 +52,29 @@ final class CleanupTests: XCTestCase {
     XCTAssertEqual(try fixture.registry.unkeep(allocation.id).phase, .removed)
   }
 
+  func testSweepSkipsFileChecksWhilePinBlocksRemoval() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.start(isAuthorized: false)
+    _ = try fixture.registry.authorizeCleanup(allocation.id, graceSeconds: 0)
+    _ = try fixture.registry.keep(allocation.id)
+    try Data("unsaved".utf8).write(to: URL(fileURLWithPath: allocation.path + "/tracked"))
+
+    _ = try fixture.registry.sweep()
+    let retained = try fixture.registry.inspect(allocation.id)
+    XCTAssertEqual(retained.phase, .retained)
+    XCTAssertEqual(retained.reason, "Retained pin owner: pin:" + allocation.id)
+    XCTAssertTrue(
+      try fixture.registry.preview(allocation.id)[0].reasons.contains {
+        $0.contains("Changed, staged")
+      })
+
+    let released = try fixture.registry.unkeep(allocation.id)
+    XCTAssertEqual(released.phase, .retained)
+    XCTAssertTrue(released.reason?.contains("Changed, staged") == true)
+    XCTAssertEqual(
+      try String(contentsOfFile: allocation.path + "/tracked", encoding: .utf8), "unsaved")
+  }
+
   func testGraceReacquisitionRevocationAndLegacyPermissionAreIndependent() throws {
     let fixture = try Fixture()
     let allocation = try fixture.start(isAuthorized: false)
