@@ -78,6 +78,9 @@ final class RegistryStore {
   func saveUsageMeasurement(_ measurement: UsageMeasurement, for id: String) throws {
     let data = String(decoding: try JSONEncoder().encode(measurement), as: UTF8.self)
     try transaction {
+      if let saved = try usageMeasurement(id), saved.measuredAt >= measurement.measuredAt {
+        return
+      }
       try execute(
         "INSERT INTO allocation_usage (id, data) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
         [id, data])

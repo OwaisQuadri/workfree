@@ -97,6 +97,22 @@ final class StorageTests: XCTestCase {
     XCTAssertEqual(try fixture.registry.refreshOverview(since: nil).measuredCount, 1)
   }
 
+  func testOlderRefreshCannotReplaceNewerSavedMeasurement() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.start("ordered-storage")
+    _ = try fixture.registry.refreshOverview(since: nil)
+    let latest = try withRegistry(fixture.registry.stateDirectory) { store in
+      try XCTUnwrap(store.usageMeasurement(allocation.id))
+    }
+    try withRegistry(fixture.registry.stateDirectory) { store in
+      try store.saveUsageMeasurement(
+        UsageMeasurement(
+          usage: latest.usage, measuredAt: latest.measuredAt.addingTimeInterval(-60)),
+        for: allocation.id)
+    }
+    XCTAssertEqual(try fixture.registry.overview(since: nil).measuredAt, latest.measuredAt)
+  }
+
   func testDetailedStatusFlagRunsTheLegacyReport() throws {
     let fixture = try Fixture()
     XCTAssertEqual(fixture.wait(try fixture.cli(["status", "--detailed"])), 0)
