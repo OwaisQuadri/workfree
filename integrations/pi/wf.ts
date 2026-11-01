@@ -19,6 +19,7 @@ export function argumentsFor(input: {
   isCleanupAllowed?: boolean;
   isCopyOnWriteRequired?: boolean;
   since?: string;
+  isRefresh?: boolean;
   graceSeconds?: number;
   disposablePath?: string;
   disposablePaths?: string[];
@@ -51,6 +52,10 @@ export function argumentsFor(input: {
   if (input.since !== undefined) {
     if (input.action !== "status") throw new Error("since applies only to status");
     args.push("--since", input.since);
+  }
+  if (input.isRefresh) {
+    if (input.action !== "status") throw new Error("refresh applies only to status");
+    args.push("--refresh");
   }
   if (input.action === "entry-exit") {
     if (!Number.isInteger(input.status)) throw new Error("entry-exit requires an integer status");
@@ -96,8 +101,11 @@ export default async function wf(pi: ExtensionAPI) {
     }));
     let details: unknown;
     let failure: Error | undefined;
-    try { details = JSON.parse(result.stdout); }
-    catch { failure = new Error("wf returned invalid JSON"); }
+    if (args.length === 1 && args[0] === "status") details = result.stdout;
+    else {
+      try { details = JSON.parse(result.stdout); }
+      catch { failure = new Error("wf returned invalid JSON"); }
+    }
     if (result.code !== 0 || result.killed) failure = new Error(result.stderr || result.stdout || `wf failed with exit code ${result.code}`);
     let acquiredDetails = details;
     if (failure && signal?.aborted && shutdownSignals.has(signal)) throw failure;
@@ -164,6 +172,7 @@ export default async function wf(pi: ExtensionAPI) {
       isCleanupAllowed: Type.Optional(Type.Boolean({ description: "Require already-recorded standing cleanup authority for start. This cannot grant permission. Normal start inherits saved policy without this flag." })),
       isCopyOnWriteRequired: Type.Optional(Type.Boolean({ description: "Require the optional simgit copy-on-write provider for this new allocation." })),
       since: Type.Optional(Type.String({ description: "Cleanup history window for status, such as 24h, 30d, 2w, or all. Default 30d." })),
+      isRefresh: Type.Optional(Type.Boolean({ description: "Refresh measured storage before returning status. This scans live worktrees and can take minutes." })),
       graceSeconds: Type.Optional(Type.Number({ description: "Operator CLI grant only. The model cannot set cleanup policy." })),
       disposablePath: Type.Optional(Type.String({ description: "Operator CLI grant only. The model cannot approve disposable paths." })),
       disposablePaths: Type.Optional(Type.Array(Type.String(), { description: "Operator CLI grant only. Standing repository policy never grants disposable paths." })),
@@ -179,7 +188,7 @@ export default async function wf(pi: ExtensionAPI) {
   pi.registerCommand("wf", {
     description: "Show storage saved and cleanup history, or inspect one task",
     handler: async (id, ctx) => {
-      const { result } = await execute(ctx, id.trim() ? ["--json", "inspect", id.trim()] : ["--json", "status"]);
+      const { result } = await execute(ctx, id.trim() ? ["--json", "inspect", id.trim()] : ["status"]);
       const isSuccess = result.code === 0 && !result.killed;
       ctx.ui.notify(isSuccess ? result.stdout : result.stderr, isSuccess ? "info" : "error");
     },

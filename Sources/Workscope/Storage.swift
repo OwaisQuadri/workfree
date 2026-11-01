@@ -37,6 +37,11 @@ func fileUsage(_ path: String) -> Usage? {
   return Usage(fullBytes: full, privateBytes: min(privateSize(path) ?? full, full))
 }
 
+public struct UsageMeasurement: Codable, Sendable {
+  public let usage: Usage
+  public let measuredAt: Date
+}
+
 public struct PathUsage: Codable, Sendable {
   public let path: String
   public let usage: Usage
@@ -99,6 +104,116 @@ public func formatBytes(_ bytes: Int64) -> String {
   if value >= 1e9 { return String(format: "%.1f GB", value / 1e9) }
   if value >= 1e6 { return String(format: "%.1f MB", value / 1e6) }
   return String(format: "%.0f KB", value / 1e3)
+}
+
+public struct StorageOverview: Codable, Sendable {
+  public let worktreeCount: Int
+  public let measuredCount: Int
+  public let savedBytes: Int64?
+  public let measuredAt: Date?
+  public let reclaimedBytes: Int64
+  public let removedCount: Int
+  public let sinceSeconds: TimeInterval?
+  public let pendingCount: Int
+  public let pendingBytes: Int64?
+  public let nextEligibleAt: Date?
+  public let nextEligibleCount: Int
+  public let nextEligibleBytes: Int64?
+  public let availableBytes: Int64?
+
+  public var text: String {
+    let age = measuredAt.map { " · oldest measurement \(describeAge($0))" } ?? ""
+    let coverage =
+      measuredCount < worktreeCount
+      ? " · \(measuredCount) of \(worktreeCount) measured" : ""
+    let saving = savedBytes.map(formatBytes) ?? "not measured"
+    let window = sinceSeconds.map { "last \(describe($0))" } ?? "all time"
+    let pending = pendingBytes.map { "~\(formatBytes($0))" } ?? "size not measured"
+    let next =
+      nextEligibleAt.map { date -> String in
+        let formatter = DateFormatter()
+        formatter.dateStyle = Calendar.current.isDateInToday(date) ? .none : .medium
+        formatter.timeStyle = .short
+        let size = nextEligibleBytes.map { "~\(formatBytes($0))" } ?? "size not measured"
+        return
+          "  Next eligible: \(size) · \(plural(nextEligibleCount, "worktree")) · \(formatter.string(from: date))"
+      } ?? "  Next eligible: none scheduled"
+    let available = availableBytes.map { " · \(formatBytes($0)) available on this disk" } ?? ""
+    return [
+      "Workfree",
+      "",
+      "  \(saving)   saved with CoW\(age)\(coverage)",
+      "  \(formatBytes(reclaimedBytes))   reclaimed by cleanup · \(window)",
+      "  \(pending)   pending cleanup · \(plural(pendingCount, "worktree"))",
+      "",
+      next,
+      "",
+      "  \(plural(worktreeCount, "worktree"))\(available)",
+    ].joined(separator: "\n")
+  }
+}
+
+func describeAge(_ date: Date, now: Date = Date()) -> String {
+  let seconds = max(0, Int(now.timeIntervalSince(date)))
+  if seconds < 60 { return "just now" }
+  if seconds < 3_600 { return "\(seconds / 60)m ago" }
+  if seconds < 86_400 { return "\(seconds / 3_600)h ago" }
+  return "\(seconds / 86_400)d ago"
+}
+
+func storageOverview(
+  _ allocations: [Allocation], measurements: [String: UsageMeasurement], since: TimeInterval?,
+  stateDirectory: String, now: Date = Date()
+) -> StorageOverview {
+  let active = allocations.filter {
+    $0.phase != .removed && (try? isPresent($0.path)) == true
+  }
+  let measured = active.compactMap { measurements[$0.id] }
+  let pending = active.compactMap { allocation -> (Date, UsageMeasurement?)? in
+    guard allocation.phase == .retained, !allocation.isRemovalPending,
+      let policy = allocation.cleanupPolicy, let eligibleSince = allocation.eligibleSince,
+      ownershipReasons(allocation).isEmpty
+    else { return nil }
+    return (eligibleSince.addingTimeInterval(policy.graceSeconds), measurements[allocation.id])
+  }
+  let nextDate = pending.map(\.0).min()
+  let next = pending.filter { candidate in
+    nextDate.map { candidate.0 <= $0.addingTimeInterval(60) } ?? false
+  }
+  var volume = statfs()
+  let available =
+    statfs(stateDirectory, &volume) == 0
+    ? Int64(volume.f_bavail) * Int64(volume.f_bsize) : nil
+  let removed = reclamations(allocations, since: since, now: now)
+  return StorageOverview(
+    worktreeCount: active.count, measuredCount: measured.count,
+    savedBytes: measured.isEmpty && !active.isEmpty
+      ? nil : measured.map(\.usage.savedBytes).reduce(0, +),
+    measuredAt: measured.map(\.measuredAt).min(),
+    reclaimedBytes: removed.map(\.estimatedBytes).reduce(0, +),
+    removedCount: removed.count, sinceSeconds: since,
+    pendingCount: pending.count,
+    pendingBytes: pending.allSatisfy { $0.1 != nil }
+      ? pending.compactMap { $0.1?.usage.privateBytes }.reduce(0, +) : nil,
+    nextEligibleAt: nextDate, nextEligibleCount: next.count,
+    nextEligibleBytes: next.allSatisfy { $0.1 != nil }
+      ? next.compactMap { $0.1?.usage.privateBytes }.reduce(0, +) : nil,
+    availableBytes: available)
+}
+
+func reclamations(
+  _ allocations: [Allocation], since: TimeInterval?, now: Date
+) -> [Reclamation] {
+  allocations.flatMap { allocation -> [Reclamation] in
+    var history = allocation.pastRemovals ?? []
+    if allocation.phase == .removed {
+      history.append(
+        Reclamation(
+          date: allocation.removedAt ?? .distantPast, estimatedBytes: allocation.reclaimedBytes ?? 0
+        ))
+    }
+    return history
+  }.filter { since == nil || $0.date >= now.addingTimeInterval(-since!) }
 }
 
 public struct StorageStatus: Codable, Sendable {
@@ -237,16 +352,7 @@ func storageStatus(
         path: repository, baseBytes: base.fullBytes,
         worktreeBytes: worktrees.map(\.usage.privateBytes).reduce(0, +), worktrees: worktrees))
   }
-  let removed = allocations.flatMap { allocation -> [Reclamation] in
-    var history = allocation.pastRemovals ?? []
-    if allocation.phase == .removed {
-      history.append(
-        Reclamation(
-          date: allocation.removedAt ?? .distantPast, estimatedBytes: allocation.reclaimedBytes ?? 0
-        ))
-    }
-    return history
-  }.filter { since == nil || $0.date >= now.addingTimeInterval(-since!) }
+  let removed = reclamations(allocations, since: since, now: now)
   return StorageStatus(
     repositories: repositories, missing: missing, live: live, sinceSeconds: since,
     removedCount: removed.count,

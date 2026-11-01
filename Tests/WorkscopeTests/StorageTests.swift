@@ -35,6 +35,52 @@ final class StorageTests: XCTestCase {
     XCTAssertEqual(try fixture.registry.status(since: nil).removedCount, 1)
   }
 
+  func testOverviewUsesSavedMeasurementsAndExcludesOwnedCleanup() throws {
+    let fixture = try Fixture()
+    _ = try fixture.registry.enableRepositoryCleanupPolicy(
+      repository: fixture.repository, graceSeconds: 3_600)
+    let allocation = try fixture.registry.start(
+      branch: "overview", repository: fixture.repository, provider: .git)
+    let unmeasured = try fixture.registry.overview(since: 86_400)
+    XCTAssertNil(unmeasured.savedBytes)
+    XCTAssertEqual(unmeasured.measuredCount, 0)
+
+    let refreshed = try fixture.registry.refreshOverview(since: 86_400)
+    XCTAssertEqual(refreshed.worktreeCount, 1)
+    XCTAssertEqual(refreshed.measuredCount, 1)
+    XCTAssertNotNil(refreshed.measuredAt)
+    let original = try withRegistry(fixture.registry.stateDirectory) { store in
+      try XCTUnwrap(store.usageMeasurement(allocation.id))
+    }
+    try withRegistry(fixture.registry.stateDirectory) { store in
+      try store.save(store.allocation(allocation.id))
+    }
+    try Data(repeating: 3, count: 100_000).write(
+      to: URL(fileURLWithPath: allocation.path + "/new-data"))
+    let saved = try withRegistry(fixture.registry.stateDirectory) {
+      try $0.usageMeasurement(allocation.id)
+    }
+    XCTAssertEqual(try fixture.registry.overview(since: 86_400).measuredAt, original.measuredAt)
+    XCTAssertEqual(saved?.usage, original.usage)
+    _ = try fixture.registry.refreshOverview(since: 86_400)
+    let updated = try withRegistry(fixture.registry.stateDirectory) {
+      try $0.usageMeasurement(allocation.id)
+    }
+    XCTAssertGreaterThan(try XCTUnwrap(updated).usage.privateBytes, original.usage.privateBytes)
+
+    try FileManager.default.removeItem(atPath: allocation.path + "/new-data")
+    _ = try fixture.registry.finish(allocation.id)
+    let pending = try fixture.registry.overview(since: 86_400)
+    XCTAssertEqual(pending.pendingCount, 1)
+    XCTAssertNotNil(pending.pendingBytes)
+    XCTAssertNotNil(pending.nextEligibleAt)
+    XCTAssertEqual(pending.nextEligibleCount, 1)
+    _ = try fixture.registry.retain(allocation.id, owner: "workspace", kind: .workspace)
+    let owned = try fixture.registry.overview(since: 86_400)
+    XCTAssertEqual(owned.pendingCount, 0)
+    XCTAssertNil(owned.nextEligibleAt)
+  }
+
   func testMeasurePathsSkipsMissingAndExcludesNestedRoots() throws {
     let fixture = try Fixture()
     let nested = fixture.repository + "/.worktrees/nested"

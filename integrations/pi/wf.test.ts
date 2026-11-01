@@ -108,8 +108,11 @@ test("finish, workspace release, and execution closure remain separate operation
 test("tools and commands share the captured override and reject killed CLI results", async () => {
   const f = await fixture(true);
   await f.run({ action: "list" });
+  f.result.stdout = "Workfree\n  not measured";
   await f.commands.get("wf").handler("", f.ctx);
+  f.result.stdout = '{"id":"allocation"}';
   await f.commands.get("wf-finish").handler("allocation", f.ctx);
+  assert.deepEqual(f.calls, [["--json", "list"], ["status"], ["--json", "finish", "allocation"]]);
   assert.deepEqual(f.executables, ["/fixture/wf", "/fixture/wf", "/fixture/wf"]);
   f.result.killed = true;
   await assert.rejects(f.run({ action: "list" }));
@@ -121,6 +124,8 @@ test("malformed task and owner operations fail before invoking the executable", 
   assert.throws(() => argumentsFor({ action: "release", id: "allocation" }, "/repo"), /owner/);
   assert.throws(() => argumentsFor({ action: "retain", id: "allocation", owner: "reader" }, "/repo"), /kind/);
   assert.throws(() => argumentsFor({ action: "entry-exit", id: "allocation", owner: "execution", status: 1.5 }, "/repo"), /integer/);
+  assert.deepEqual(argumentsFor({ action: "status", isRefresh: true }, "/repo"), ["--json", "status", "--refresh"]);
+  assert.throws(() => argumentsFor({ action: "list", isRefresh: true }, "/repo"), /refresh applies only to status/);
 });
 
 test("model grant requests fail with operator setup guidance regardless of UI approval", async () => {

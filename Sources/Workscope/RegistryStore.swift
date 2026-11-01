@@ -37,6 +37,8 @@ final class RegistryStore {
       try require(try strings("PRAGMA integrity_check") == ["ok"], "Corrupt registry")
       _ = try strings("SELECT token FROM owner_tokens LIMIT 1")
       _ = try strings("SELECT data FROM allocations LIMIT 1")
+      try execute(
+        "CREATE TABLE IF NOT EXISTS allocation_usage (id TEXT PRIMARY KEY, data TEXT NOT NULL)")
       if try [["3"], ["4"], ["5"]].contains(strings("PRAGMA user_version")) {
         _ = try strings("SELECT data FROM repository_cleanup_policies LIMIT 1")
       }
@@ -65,6 +67,21 @@ final class RegistryStore {
     let allocation = try JSONDecoder().decode(Allocation.self, from: Data(row.utf8))
     try require(allocation.id == id, "Allocation identity mismatch")
     return allocation
+  }
+
+  func usageMeasurement(_ id: String) throws -> UsageMeasurement? {
+    try strings("SELECT data FROM allocation_usage WHERE id=?", [id]).first.map {
+      try JSONDecoder().decode(UsageMeasurement.self, from: Data($0.utf8))
+    }
+  }
+
+  func saveUsageMeasurement(_ measurement: UsageMeasurement, for id: String) throws {
+    let data = String(decoding: try JSONEncoder().encode(measurement), as: UTF8.self)
+    try transaction {
+      try execute(
+        "INSERT INTO allocation_usage (id, data) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
+        [id, data])
+    }
   }
 
   func isTokenReserved(_ token: String) throws -> Bool {

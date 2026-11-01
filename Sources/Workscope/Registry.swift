@@ -291,6 +291,32 @@ public struct Registry: Sendable {
     storageStatus(try list(), since: since, isLiveMeasured: isLiveMeasured)
   }
 
+  public func overview(since: TimeInterval?) throws -> StorageOverview {
+    try withRegistry(stateDirectory) { store in
+      let allocations = try store.allocations()
+      var measurements: [String: UsageMeasurement] = [:]
+      for allocation in allocations where allocation.phase != .removed {
+        measurements[allocation.id] = try store.usageMeasurement(allocation.id)
+      }
+      return storageOverview(
+        allocations, measurements: measurements, since: since, stateDirectory: stateDirectory)
+    }
+  }
+
+  public func refreshOverview(since: TimeInterval?) throws -> StorageOverview {
+    let measuredAt = Date()
+    let fresh = try status(since: since)
+    try withRegistry(stateDirectory) { store in
+      for worktree in fresh.repositories.flatMap(\.worktrees) {
+        let allocation = try store.allocation(worktree.id)
+        guard allocation.phase != .removed, allocation.path == worktree.path else { continue }
+        try store.saveUsageMeasurement(
+          UsageMeasurement(usage: worktree.usage, measuredAt: measuredAt), for: allocation.id)
+      }
+    }
+    return try overview(since: since)
+  }
+
   public func inspect(_ id: String) throws -> Allocation {
     try withRegistry(stateDirectory) { try $0.allocation(id) }
   }
