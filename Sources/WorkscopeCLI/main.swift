@@ -85,7 +85,7 @@ struct Arguments {
         case "--require-cow": isCowRequired = true
         case "--json": isJSON = true
         case "--refresh": isRefresh = true
-        case "--detailed": isDetailed = true
+        case "--detailed", "--details": isDetailed = true
         case "--help": isHelp = true
         case "--version": isVersion = true
         case "--state-dir", "--repo", "--base", "--path", "--owner", "--kind", "--label",
@@ -141,7 +141,7 @@ struct Arguments {
       "sweep":
       allowed = []
     case "authorize-cleanup": allowed = ["--grace-seconds", "--disposable-path"]
-    case "status": allowed = ["--since", "--refresh", "--detailed"]
+    case "status": allowed = ["--since", "--refresh", "--detailed", "--details"]
     case "measure", "claim": allowed = []
     default: throw WorkscopeError("Unknown command: \(action)")
     }

@@ -100,6 +100,7 @@ final class StorageTests: XCTestCase {
   func testDetailedStatusFlagRunsTheLegacyReport() throws {
     let fixture = try Fixture()
     XCTAssertEqual(fixture.wait(try fixture.cli(["status", "--detailed"])), 0)
+    XCTAssertEqual(fixture.wait(try fixture.cli(["status", "--details"])), 0)
   }
 
   func testMeasurePathsSkipsMissingAndExcludesNestedRoots() throws {
