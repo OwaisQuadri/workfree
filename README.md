@@ -131,29 +131,25 @@ The first repository policy advances the registry format to version 3. Global se
 
 ## Storage saved
 
-`wf status` shows what copy-on-write storage and cleanup save you:
+`wf status` and Pi's `/wf` show the last measured copy-on-write (CoW) savings without scanning every worktree:
 
 ```text
-Live worktrees: 3 · full checkouts would use 3.1 GB · actually using 2.0 GB · saved 1.1 GB
-Native checkouts: 1 use 684.6 MB. With simgit, they would use about 120.0 MB (estimate).
-Auto-cleanup, last 30 days: 1 worktree removed · 412.0 MB reclaimed (estimated private bytes)
+Workfree
 
-/path/to/repo  1.2 GB + 2.0 GB
-  feature/a  5497abb5-a8e9-4f0d-b860-b7ae83eb7ca5  886.4 MB
-  fix/b  c1922b5d-15bc-4987-a213-e3a3368f38df  444.8 MB
-  fix/c  fa1733c0-6aca-4fde-8b5f-39f9fd3a2026  684.6 MB  blocked: Changed, staged, untracked, or ignored files remain
+  5.0 GB   saved with CoW · oldest measurement 10m ago
+  1.2 GB   reclaimed by cleanup · last 30 days
+  ~700.0 MB   pending cleanup · 3 worktrees
+
+  Next eligible: ~400.0 MB · 2 worktrees · 2:40 PM
+
+  34 worktrees · 36.6 GB available on this disk
 ```
 
-- Full size counts every allocated block. Actual use counts only the blocks that a worktree does not share with an APFS clone.
-- Build outputs and other untracked files are always private, so they reduce the saving.
-- Each repository line shows the full size of its base checkout plus the private bytes of its worktrees.
-- Native Git worktrees also show an estimate of their size with simgit.
-- Allocations whose checkout no longer exists appear under "Missing checkouts" with their identifier and phase. `wf recover` completes an interrupted removal.
-- `--since 24h`, `--since 2w`, or `--since all` changes the cleanup window. The default is 30 days.
-- Any `wf` command that removes a checkout prints the reclaimed size. `/wf-finish` in Pi shows it too.
-- In Pi, `/wf` shows the same report.
+Run `wf status --refresh` to scan worktrees and update the saved measurements. Until the first refresh, savings and pending size say `not measured`. If some worktrees have no measurement, the report shows how many are measured. The oldest measurement age makes stale figures visible. The available-space figure refers to the disk that holds Workfree's registry, not every worktree disk.
 
-Cleanup history starts with this version. The report walks every live worktree, so it takes seconds for large checkouts.
+CoW savings are the full allocated bytes minus private bytes in measured worktrees. Build outputs and untracked files are private. Reclaimed bytes are estimates recorded when cleanup removed worktrees. Pending cleanup counts only authorized worktrees with a recorded grace period and no live owner. It is an estimate, not permission to remove a worktree: the final file and identity checks can still block cleanup. The next-eligible amount groups pending worktrees scheduled within one minute of the earliest one. Eligibility does not mean a sweep will run at that time.
+
+`--since 24h`, `--since 2w`, or `--since all` changes the cleanup history window; the default is 30 days. `wf status --detailed` keeps the previous per-repository report and performs a live scan. `--json status` returns the compact overview; use `--json status --detailed` for the prior detailed data. Any `wf` command that removes a checkout prints the reclaimed size. `/wf-finish` in Pi shows it too.
 
 ## How ownership works
 

@@ -35,6 +35,132 @@ final class StorageTests: XCTestCase {
     XCTAssertEqual(try fixture.registry.status(since: nil).removedCount, 1)
   }
 
+  func testOverviewUsesSavedMeasurementsAndExcludesOwnedCleanup() throws {
+    let fixture = try Fixture()
+    _ = try fixture.registry.enableRepositoryCleanupPolicy(
+      repository: fixture.repository, graceSeconds: 3_600)
+    let allocation = try fixture.registry.start(
+      branch: "overview", repository: fixture.repository, provider: .git)
+    let unmeasured = try fixture.registry.overview(since: 86_400)
+    XCTAssertNil(unmeasured.savedBytes)
+    XCTAssertEqual(unmeasured.measuredCount, 0)
+
+    let refreshed = try fixture.registry.refreshOverview(since: 86_400)
+    XCTAssertEqual(refreshed.worktreeCount, 1)
+    XCTAssertEqual(refreshed.measuredCount, 1)
+    XCTAssertNotNil(refreshed.measuredAt)
+    let original = try withRegistry(fixture.registry.stateDirectory) { store in
+      try XCTUnwrap(store.usageMeasurement(allocation.id))
+    }
+    try withRegistry(fixture.registry.stateDirectory) { store in
+      try store.save(store.allocation(allocation.id))
+    }
+    try Data(repeating: 3, count: 100_000).write(
+      to: URL(fileURLWithPath: allocation.path + "/new-data"))
+    let saved = try withRegistry(fixture.registry.stateDirectory) {
+      try $0.usageMeasurement(allocation.id)
+    }
+    XCTAssertEqual(try fixture.registry.overview(since: 86_400).measuredAt, original.measuredAt)
+    XCTAssertEqual(saved?.usage, original.usage)
+    _ = try fixture.registry.refreshOverview(since: 86_400)
+    let updated = try withRegistry(fixture.registry.stateDirectory) {
+      try $0.usageMeasurement(allocation.id)
+    }
+    XCTAssertGreaterThan(try XCTUnwrap(updated).usage.privateBytes, original.usage.privateBytes)
+
+    try FileManager.default.removeItem(atPath: allocation.path + "/new-data")
+    _ = try fixture.registry.finish(allocation.id)
+    let pending = try fixture.registry.overview(since: 86_400)
+    XCTAssertEqual(pending.pendingCount, 1)
+    XCTAssertNotNil(pending.pendingBytes)
+    XCTAssertNotNil(pending.nextEligibleAt)
+    XCTAssertEqual(pending.nextEligibleCount, 1)
+    _ = try fixture.registry.retain(allocation.id, owner: "workspace", kind: .workspace)
+    let owned = try fixture.registry.overview(since: 86_400)
+    XCTAssertEqual(owned.pendingCount, 0)
+    XCTAssertNil(owned.nextEligibleAt)
+    XCTAssertTrue(owned.text.contains("0 KB   pending cleanup · 0 worktrees"))
+  }
+
+  func testRestoreDiscardsMeasurementsFromTheRemovedCheckout() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.start("restored-storage")
+    XCTAssertEqual(try fixture.registry.refreshOverview(since: nil).measuredCount, 1)
+    XCTAssertEqual(try fixture.registry.finish(allocation.id).phase, .removed)
+    XCTAssertEqual(try fixture.registry.overview(since: nil).measuredCount, 0)
+
+    XCTAssertEqual(try fixture.registry.restore(allocation.id).phase, .retained)
+    let restored = try fixture.registry.overview(since: nil)
+    XCTAssertEqual(restored.worktreeCount, 1)
+    XCTAssertEqual(restored.measuredCount, 0)
+    XCTAssertNil(restored.savedBytes)
+    XCTAssertEqual(try fixture.registry.refreshOverview(since: nil).measuredCount, 1)
+  }
+
+  func testOlderRefreshCannotReplaceNewerSavedMeasurement() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.start("ordered-storage")
+    _ = try fixture.registry.refreshOverview(since: nil)
+    let latest = try withRegistry(fixture.registry.stateDirectory) { store in
+      try XCTUnwrap(store.usageMeasurement(allocation.id))
+    }
+    try withRegistry(fixture.registry.stateDirectory) { store in
+      try store.saveUsageMeasurement(
+        UsageMeasurement(
+          usage: latest.usage, measuredAt: latest.measuredAt.addingTimeInterval(-60)),
+        for: allocation.id)
+    }
+    XCTAssertEqual(try fixture.registry.overview(since: nil).measuredAt, latest.measuredAt)
+  }
+
+  func testOverlappingRefreshKeepsTheNewerScan() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.start("overlapping-storage")
+    let registry = fixture.registry
+    let scanned = DispatchSemaphore(value: 0)
+    let resume = DispatchSemaphore(value: 0)
+    let finished = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+      defer { finished.signal() }
+      do {
+        _ = try registry.refreshOverview(since: nil) { allocations, since in
+          let result = storageStatus(allocations, since: since)
+          scanned.signal()
+          _ = resume.wait(timeout: .now() + 10)
+          return result
+        }
+      } catch {
+        XCTFail("The older refresh failed: \(error)")
+      }
+    }
+    defer { resume.signal() }
+    guard scanned.wait(timeout: .now() + 10) == .success else {
+      XCTFail("The older scan did not start")
+      XCTAssertEqual(finished.wait(timeout: .now() + 10), .success)
+      return
+    }
+    try Data(repeating: 1, count: 100_000).write(
+      to: URL(fileURLWithPath: allocation.path + "/new-data"))
+    _ = try registry.refreshOverview(since: nil)
+    let newer = try withRegistry(registry.stateDirectory) { store in
+      try XCTUnwrap(store.usageMeasurement(allocation.id))
+    }
+    resume.signal()
+    XCTAssertEqual(finished.wait(timeout: .now() + 10), .success)
+    let stored = try withRegistry(registry.stateDirectory) { store in
+      try XCTUnwrap(store.usageMeasurement(allocation.id))
+    }
+    XCTAssertEqual(stored.measuredAt, newer.measuredAt)
+    XCTAssertEqual(stored.usage, newer.usage)
+    XCTAssertGreaterThanOrEqual(stored.usage.privateBytes, 100_000)
+  }
+
+  func testDetailedStatusFlagRunsTheLegacyReport() throws {
+    let fixture = try Fixture()
+    XCTAssertEqual(fixture.wait(try fixture.cli(["status", "--detailed"])), 0)
+    XCTAssertEqual(fixture.wait(try fixture.cli(["status", "--details"])), 0)
+  }
+
   func testMeasurePathsSkipsMissingAndExcludesNestedRoots() throws {
     let fixture = try Fixture()
     let nested = fixture.repository + "/.worktrees/nested"

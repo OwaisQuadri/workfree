@@ -12,7 +12,7 @@ let help = """
     claim [ID]
     inspect ID
     list
-    status [--since 30d|24h|2w|all]
+    status [--since 30d|24h|2w|all] [--refresh | --detailed]
     measure PATH...
     retain ID --owner TOKEN --kind task|workspace|execution|pin [--label TEXT]
     release ID --owner TOKEN
@@ -58,6 +58,8 @@ struct Arguments {
   var isCleanupAuthorized = false
   var isCleanupPolicyRequired = false
   var isJSON = false
+  var isRefresh = false
+  var isDetailed = false
   var isHelp = false
   var isVersion = false
   var command: [String] = []
@@ -82,6 +84,8 @@ struct Arguments {
         case "--require-cleanup-policy": isCleanupPolicyRequired = true
         case "--require-cow": isCowRequired = true
         case "--json": isJSON = true
+        case "--refresh": isRefresh = true
+        case "--detailed", "--details": isDetailed = true
         case "--help": isHelp = true
         case "--version": isVersion = true
         case "--state-dir", "--repo", "--base", "--path", "--owner", "--kind", "--label",
@@ -137,7 +141,7 @@ struct Arguments {
       "sweep":
       allowed = []
     case "authorize-cleanup": allowed = ["--grace-seconds", "--disposable-path"]
-    case "status": allowed = ["--since"]
+    case "status": allowed = ["--since", "--refresh", "--detailed", "--details"]
     case "measure", "claim": allowed = []
     default: throw WorkscopeError("Unknown command: \(action)")
     }
@@ -162,6 +166,9 @@ struct Arguments {
     }
     if action == "run", !flags.contains("--") || command.isEmpty {
       throw WorkscopeError("run requires -- COMMAND...")
+    }
+    if isRefresh && isDetailed {
+      throw WorkscopeError("Choose either --refresh or --detailed")
     }
   }
 
@@ -273,11 +280,15 @@ do {
     } else if action == "measure" {
       try output(measurePaths(Array(arguments.positional.dropFirst())), isJSON: arguments.isJSON)
     } else if action == "status" {
-      let status = try registry.status(since: parseInterval(arguments.options["--since"] ?? "30d"))
-      if arguments.isJSON {
-        try output(status, isJSON: true)
+      let since = try parseInterval(arguments.options["--since"] ?? "30d")
+      if arguments.isDetailed {
+        let status = try registry.status(since: since)
+        if arguments.isJSON { try output(status, isJSON: true) } else { print(status.text) }
       } else {
-        print(status.text)
+        let overview =
+          try arguments.isRefresh
+          ? registry.refreshOverview(since: since) : registry.overview(since: since)
+        if arguments.isJSON { try output(overview, isJSON: true) } else { print(overview.text) }
       }
     } else {
       let id = arguments.positional[1]
