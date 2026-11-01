@@ -117,22 +117,26 @@ func verifyRecovery(_ allocation: Allocation) throws {
       == recovery.commit, "Recovery reference changed")
 }
 
-func cleanupPreview(_ allocation: Allocation) -> CleanupPreview {
+func cleanupPreview(
+  _ allocation: Allocation, isFileVerificationRequired: Bool = true
+) -> CleanupPreview {
   var reasons = ownershipReasons(allocation)
   if allocation.phase == .creating || allocation.phase == .failed {
     reasons.append("Allocation identity requires recovery")
   }
   if allocation.isRemovalPending { reasons.append("Removal is pending; use recover") }
-  do {
-    _ = try verifyFiles(allocation)
-    if allocation.cleanupPolicy == nil {
-      let head = try git(allocation.path, ["rev-parse", "HEAD"])
-      let refs = try git(
-        allocation.repository,
-        ["for-each-ref", "--contains", head, "--format=%(refname)", "refs/heads", "refs/tags"])
-      try require(!refs.isEmpty, "No ordinary branch or tag preserves HEAD")
-    }
-  } catch { reasons.append(String(describing: error)) }
+  if isFileVerificationRequired || reasons.isEmpty {
+    do {
+      _ = try verifyFiles(allocation)
+      if allocation.cleanupPolicy == nil {
+        let head = try git(allocation.path, ["rev-parse", "HEAD"])
+        let refs = try git(
+          allocation.repository,
+          ["for-each-ref", "--contains", head, "--format=%(refname)", "refs/heads", "refs/tags"])
+        try require(!refs.isEmpty, "No ordinary branch or tag preserves HEAD")
+      }
+    } catch { reasons.append(String(describing: error)) }
+  }
   let estimatedBytes = reasons.isEmpty ? measure(allocation.path).privateBytes : 0
   let eligibleAt = allocation.eligibleSince.map {
     $0.addingTimeInterval(allocation.cleanupPolicy?.graceSeconds ?? 0)
@@ -157,7 +161,7 @@ func cleanup(_ allocation: inout Allocation, store: RegistryStore, event: String
     try reconcileRemoval(&allocation, store: store)
     return
   }
-  let preview = cleanupPreview(allocation)
+  let preview = cleanupPreview(allocation, isFileVerificationRequired: event != "sweep")
   let blockers = preview.reasons.filter {
     $0 != "Awaiting grace period" && $0 != "Eligible after grace period"
   }
