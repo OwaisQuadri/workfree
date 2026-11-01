@@ -113,6 +113,48 @@ final class StorageTests: XCTestCase {
     XCTAssertEqual(try fixture.registry.overview(since: nil).measuredAt, latest.measuredAt)
   }
 
+  func testOverlappingRefreshKeepsTheNewerScan() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.start("overlapping-storage")
+    let registry = fixture.registry
+    let scanned = DispatchSemaphore(value: 0)
+    let resume = DispatchSemaphore(value: 0)
+    let finished = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+      defer { finished.signal() }
+      do {
+        _ = try registry.refreshOverview(since: nil) { allocations, since in
+          let result = storageStatus(allocations, since: since)
+          scanned.signal()
+          _ = resume.wait(timeout: .now() + 10)
+          return result
+        }
+      } catch {
+        XCTFail("The older refresh failed: \(error)")
+      }
+    }
+    defer { resume.signal() }
+    guard scanned.wait(timeout: .now() + 10) == .success else {
+      XCTFail("The older scan did not start")
+      XCTAssertEqual(finished.wait(timeout: .now() + 10), .success)
+      return
+    }
+    try Data(repeating: 1, count: 100_000).write(
+      to: URL(fileURLWithPath: allocation.path + "/new-data"))
+    _ = try registry.refreshOverview(since: nil)
+    let newer = try withRegistry(registry.stateDirectory) { store in
+      try XCTUnwrap(store.usageMeasurement(allocation.id))
+    }
+    resume.signal()
+    XCTAssertEqual(finished.wait(timeout: .now() + 10), .success)
+    let stored = try withRegistry(registry.stateDirectory) { store in
+      try XCTUnwrap(store.usageMeasurement(allocation.id))
+    }
+    XCTAssertEqual(stored.measuredAt, newer.measuredAt)
+    XCTAssertEqual(stored.usage, newer.usage)
+    XCTAssertGreaterThanOrEqual(stored.usage.privateBytes, 100_000)
+  }
+
   func testDetailedStatusFlagRunsTheLegacyReport() throws {
     let fixture = try Fixture()
     XCTAssertEqual(fixture.wait(try fixture.cli(["status", "--detailed"])), 0)

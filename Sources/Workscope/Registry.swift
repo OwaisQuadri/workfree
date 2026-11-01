@@ -304,10 +304,16 @@ public struct Registry: Sendable {
   }
 
   public func refreshOverview(since: TimeInterval?) throws -> StorageOverview {
+    try refreshOverview(since: since) { storageStatus($0, since: $1) }
+  }
+
+  func refreshOverview(
+    since: TimeInterval?, scan: @Sendable ([Allocation], TimeInterval?) -> StorageStatus
+  ) throws -> StorageOverview {
     let measuredAt = Date()
     let snapshot = try list()
     let original = Dictionary(uniqueKeysWithValues: snapshot.map { ($0.id, $0) })
-    let fresh = storageStatus(snapshot, since: since)
+    let fresh = scan(snapshot, since)
     try withRegistry(stateDirectory) { store in
       for worktree in fresh.repositories.flatMap(\.worktrees) {
         let allocation = try store.allocation(worktree.id)
