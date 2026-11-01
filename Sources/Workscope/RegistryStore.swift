@@ -337,6 +337,9 @@ final class RegistryStore {
         [data, allocation.id, allocation.path])
       try require(sqlite3_changes(database) == 1, "Allocation identity changed")
     }
+    if allocation.phase == .creating || allocation.phase == .removed {
+      try execute("DELETE FROM allocation_usage WHERE id=?", [allocation.id])
+    }
   }
 
   private func transaction<T>(_ operation: () throws -> T) throws -> T {

@@ -79,6 +79,27 @@ final class StorageTests: XCTestCase {
     let owned = try fixture.registry.overview(since: 86_400)
     XCTAssertEqual(owned.pendingCount, 0)
     XCTAssertNil(owned.nextEligibleAt)
+    XCTAssertTrue(owned.text.contains("0 KB   pending cleanup · 0 worktrees"))
+  }
+
+  func testRestoreDiscardsMeasurementsFromTheRemovedCheckout() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.start("restored-storage")
+    XCTAssertEqual(try fixture.registry.refreshOverview(since: nil).measuredCount, 1)
+    XCTAssertEqual(try fixture.registry.finish(allocation.id).phase, .removed)
+    XCTAssertEqual(try fixture.registry.overview(since: nil).measuredCount, 0)
+
+    XCTAssertEqual(try fixture.registry.restore(allocation.id).phase, .retained)
+    let restored = try fixture.registry.overview(since: nil)
+    XCTAssertEqual(restored.worktreeCount, 1)
+    XCTAssertEqual(restored.measuredCount, 0)
+    XCTAssertNil(restored.savedBytes)
+    XCTAssertEqual(try fixture.registry.refreshOverview(since: nil).measuredCount, 1)
+  }
+
+  func testDetailedStatusFlagRunsTheLegacyReport() throws {
+    let fixture = try Fixture()
+    XCTAssertEqual(fixture.wait(try fixture.cli(["status", "--detailed"])), 0)
   }
 
   func testMeasurePathsSkipsMissingAndExcludesNestedRoots() throws {

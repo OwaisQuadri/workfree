@@ -128,7 +128,8 @@ public struct StorageOverview: Codable, Sendable {
       ? " · \(measuredCount) of \(worktreeCount) measured" : ""
     let saving = savedBytes.map(formatBytes) ?? "not measured"
     let window = sinceSeconds.map { "last \(describe($0))" } ?? "all time"
-    let pending = pendingBytes.map { "~\(formatBytes($0))" } ?? "size not measured"
+    let pending =
+      pendingCount == 0 ? "0 KB" : pendingBytes.map { "~\(formatBytes($0))" } ?? "size not measured"
     let next =
       nextEligibleAt.map { date -> String in
         let formatter = DateFormatter()

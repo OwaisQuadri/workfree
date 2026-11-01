@@ -12,7 +12,7 @@ let help = """
     claim [ID]
     inspect ID
     list
-    status [--since 30d|24h|2w|all] [--refresh | --details]
+    status [--since 30d|24h|2w|all] [--refresh | --detailed]
     measure PATH...
     retain ID --owner TOKEN --kind task|workspace|execution|pin [--label TEXT]
     release ID --owner TOKEN
@@ -85,7 +85,7 @@ struct Arguments {
         case "--require-cow": isCowRequired = true
         case "--json": isJSON = true
         case "--refresh": isRefresh = true
-        case "--details": isDetailed = true
+        case "--detailed": isDetailed = true
         case "--help": isHelp = true
         case "--version": isVersion = true
         case "--state-dir", "--repo", "--base", "--path", "--owner", "--kind", "--label",
@@ -141,7 +141,7 @@ struct Arguments {
       "sweep":
       allowed = []
     case "authorize-cleanup": allowed = ["--grace-seconds", "--disposable-path"]
-    case "status": allowed = ["--since", "--refresh", "--details"]
+    case "status": allowed = ["--since", "--refresh", "--detailed"]
     case "measure", "claim": allowed = []
     default: throw WorkscopeError("Unknown command: \(action)")
     }
@@ -168,7 +168,7 @@ struct Arguments {
       throw WorkscopeError("run requires -- COMMAND...")
     }
     if isRefresh && isDetailed {
-      throw WorkscopeError("Choose either --refresh or --details")
+      throw WorkscopeError("Choose either --refresh or --detailed")
     }
   }
 

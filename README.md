@@ -149,7 +149,7 @@ Run `wf status --refresh` to scan worktrees and update the saved measurements. U
 
 CoW savings are the full allocated bytes minus private bytes in measured worktrees. Build outputs and untracked files are private. Reclaimed bytes are estimates recorded when cleanup removed worktrees. Pending cleanup counts only authorized worktrees with a recorded grace period and no live owner. It is an estimate, not permission to remove a worktree: the final file and identity checks can still block cleanup. The next-eligible amount groups pending worktrees scheduled within one minute of the earliest one. Eligibility does not mean a sweep will run at that time.
 
-`--since 24h`, `--since 2w`, or `--since all` changes the cleanup history window; the default is 30 days. `wf status --details` keeps the previous per-repository report and performs a live scan. `--json status` returns the compact overview; use `--json status --details` for the prior detailed data. Any `wf` command that removes a checkout prints the reclaimed size. `/wf-finish` in Pi shows it too.
+`--since 24h`, `--since 2w`, or `--since all` changes the cleanup history window; the default is 30 days. `wf status --detailed` keeps the previous per-repository report and performs a live scan. `--json status` returns the compact overview; use `--json status --detailed` for the prior detailed data. Any `wf` command that removes a checkout prints the reclaimed size. `/wf-finish` in Pi shows it too.
 
 ## How ownership works
 

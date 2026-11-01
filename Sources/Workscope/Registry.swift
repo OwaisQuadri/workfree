@@ -305,11 +305,17 @@ public struct Registry: Sendable {
 
   public func refreshOverview(since: TimeInterval?) throws -> StorageOverview {
     let measuredAt = Date()
-    let fresh = try status(since: since)
+    let snapshot = try list()
+    let original = Dictionary(uniqueKeysWithValues: snapshot.map { ($0.id, $0) })
+    let fresh = storageStatus(snapshot, since: since)
     try withRegistry(stateDirectory) { store in
       for worktree in fresh.repositories.flatMap(\.worktrees) {
         let allocation = try store.allocation(worktree.id)
-        guard allocation.phase != .removed, allocation.path == worktree.path else { continue }
+        guard let before = original[worktree.id],
+          allocation.phase == before.phase, allocation.phase != .removed,
+          allocation.path == worktree.path,
+          allocation.recovery?.reference == before.recovery?.reference
+        else { continue }
         try store.saveUsageMeasurement(
           UsageMeasurement(usage: worktree.usage, measuredAt: measuredAt), for: allocation.id)
       }
