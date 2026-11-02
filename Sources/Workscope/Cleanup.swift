@@ -226,7 +226,13 @@ func cleanupPreview(
     reasons.append("Allocation identity requires recovery")
   }
   if allocation.isRemovalPending { reasons.append("Removal is pending; use recover") }
-  if isFileVerificationRequired || reasons.isEmpty {
+  let eligibleAt = allocation.eligibleSince.map {
+    $0.addingTimeInterval(cleanupGrace(allocation))
+  }
+  let isGracePending =
+    allocation.cleanupPolicy != nil
+    && (eligibleAt.map { $0 > Date() } ?? (cleanupGrace(allocation) > 0))
+  if isFileVerificationRequired || (reasons.isEmpty && !isGracePending) {
     do {
       _ = try verifyFiles(allocation, isCheckpointAllowed: allocation.cleanupPolicy != nil)
       if allocation.cleanupPolicy == nil {
@@ -238,13 +244,12 @@ func cleanupPreview(
       }
     } catch { reasons.append(String(describing: error)) }
   }
-  let estimatedBytes = reasons.isEmpty ? measure(allocation.path).privateBytes : 0
-  let eligibleAt = allocation.eligibleSince.map {
-    $0.addingTimeInterval(cleanupGrace(allocation))
-  }
+  let estimatedBytes =
+    reasons.isEmpty && (!isGracePending || isFileVerificationRequired)
+    ? measure(allocation.path).privateBytes : 0
   if reasons.isEmpty, allocation.cleanupPolicy != nil {
-    if let eligibleAt {
-      if eligibleAt > Date() { reasons.append("Eligible after grace period") }
+    if eligibleAt != nil {
+      if isGracePending { reasons.append("Eligible after grace period") }
     } else if cleanupGrace(allocation) > 0 {
       reasons.append("Awaiting grace period")
     }
