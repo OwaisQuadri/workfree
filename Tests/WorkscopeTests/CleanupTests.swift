@@ -373,7 +373,8 @@ final class CleanupTests: XCTestCase {
 
   func testLateStagedChangeBlocksIndexReplacement() throws {
     let fixture = try Fixture()
-    let allocation = try fixture.registry.start(branch: UUID().uuidString, repository: fixture.repository)
+    let allocation = try fixture.registry.start(
+      branch: UUID().uuidString, repository: fixture.repository)
     let source = try git(allocation.path, ["rev-parse", "HEAD"])
     let stagedTree = try git(allocation.path, ["write-tree"])
     let checkpoint = try git(

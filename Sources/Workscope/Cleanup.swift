@@ -63,9 +63,12 @@ private func pushOffload(_ allocation: Allocation) throws -> (
   return (commit, source, stagedTree)
 }
 
-func advanceCheckout(_ allocation: Allocation, offload: (
-  commit: String, source: String, stagedTree: String
-)) throws {
+func advanceCheckout(
+  _ allocation: Allocation,
+  offload: (
+    commit: String, source: String, stagedTree: String
+  )
+) throws {
   let path = allocation.path
   let index = try git(path, ["rev-parse", "--path-format=absolute", "--git-path", "index"])
   let baseline = try Data(contentsOf: URL(fileURLWithPath: index))
