@@ -40,7 +40,7 @@ Age, command exit, and a saved commit do not prove that those users stopped.
 
 Removal requires matching allocation identity, a non-primary checkout, no unpreserved changes, and an exact recovery reference.
 Workfree creates the recovery reference in the surviving local repository before recording removal intent.
-Under a recoverable policy, Workfree writes staged contents to an ancestor commit and tracked and untracked working-tree contents to a final checkpoint commit without changing the checkout's index or branch. Restore checks out the final working-tree state; the staged snapshot remains in its commit history, not in the restored index. Workfree pushes the final commit to an allocation-specific `workfree/offload/` branch on `origin` and verifies the remote commit before removal. A missing remote or failed push retains the checkout. Legacy cleanup without a recoverable policy still requires unchanged tracked and untracked files.
+Under a recoverable policy, Workfree writes staged contents to an ancestor commit and tracked and untracked working-tree contents to a final checkpoint commit without changing the checkout's index or branch during snapshot creation. Restore checks out the final working-tree state; the staged snapshot remains in its commit history, not in the restored index. Workfree pushes the final commit to an allocation-specific `workfree/offload/` branch on `origin` and verifies the remote commit before removal. It then advances the checkout to that commit without overwriting working files. Removal refuses a checkout that becomes dirty after this step. A failed removal can leave the branch and index at the checkpoint; both prior states remain in the remote commits. A missing remote or failed push retains the checkout. Legacy cleanup without a recoverable policy still requires unchanged tracked and untracked files.
 Ignored files block cleanup unless an explicit policy names their generated path as disposable.
 Tracked contents, aliases, and paths outside the checkout cannot qualify as disposable output.
 Git operations in progress also block cleanup.
@@ -50,7 +50,7 @@ A replacement checkout at the same path must not satisfy an old removal request.
 Git registration checks compare normalized paths, including aliases and paths that no longer exist.
 A missing directory with a remaining registration is not a completed removal.
 
-Legacy cleanup calls `simgit remove` without destructive flags. Policy offload uses dirty-removal flags only after the checkpoint is pushed, the local recovery reference exists, and the checkout still matches the checkpoint tree. Workfree never deletes branches automatically or changes the checkout's index to create the checkpoint.
+Legacy cleanup and policy offload call the provider's removal command without dirty-removal flags. Workfree never deletes branches automatically. It does not change the checkout's index to create the checkpoint, but it advances the branch and index to the published checkpoint before removal.
 
 ## Persistence and failure
 

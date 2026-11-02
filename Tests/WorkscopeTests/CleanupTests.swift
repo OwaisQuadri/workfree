@@ -371,6 +371,30 @@ final class CleanupTests: XCTestCase {
       try String(contentsOfFile: allocation.path + "/tracked", encoding: .utf8), "later")
   }
 
+  func testProviderRemovalRefusesChangesAfterCheckpoint() throws {
+    let fixture = try Fixture()
+    for provider: WorktreeProvider in [.git, .simgit] {
+      let allocation = try fixture.registry.start(
+        branch: UUID().uuidString, repository: fixture.repository, provider: provider)
+      try Data("checkpoint".utf8).write(to: URL(fileURLWithPath: allocation.path + "/tracked"))
+      _ = try git(allocation.path, ["add", "tracked"])
+      _ = try git(allocation.path, ["commit", "-m", "Checkpoint"])
+      try Data("late write".utf8).write(to: URL(fileURLWithPath: allocation.path + "/tracked"))
+      switch provider {
+      case .git:
+        XCTAssertThrowsError(
+          try git(fixture.repository, ["worktree", "remove", "--", allocation.path]))
+      case .simgit:
+        XCTAssertThrowsError(
+          try command(
+            "/usr/bin/env", ["simgit", "remove", allocation.path], at: fixture.repository))
+      }
+      XCTAssertEqual(
+        try String(contentsOfFile: allocation.path + "/tracked", encoding: .utf8), "late write")
+      XCTAssertTrue(try isRegistered(fixture.repository, allocation.path))
+    }
+  }
+
   func testPolicyDoesNotOffloadUnapprovedIgnoredFiles() throws {
     let fixture = try Fixture()
     let allocation = try fixture.start(isAuthorized: false)

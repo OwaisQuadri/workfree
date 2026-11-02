@@ -291,17 +291,14 @@ func cleanup(_ allocation: inout Allocation, store: RegistryStore, event: String
     allocation.reclaimedBytes = bytes
     recordAttempt(&allocation, event: event, reasons: [])
     try store.save(allocation)
+    if isOffload { _ = try git(allocation.path, ["reset", "--mixed", head]) }
     for target in targets { try FileManager.default.removeItem(atPath: target) }
     switch allocation.provider {
     case .simgit:
       _ = try command(
-        "/usr/bin/env",
-        ["simgit", "remove"] + (isOffload ? ["--discard-dirty"] : []) + [allocation.path],
-        at: allocation.repository)
+        "/usr/bin/env", ["simgit", "remove", allocation.path], at: allocation.repository)
     case .git:
-      _ = try git(
-        allocation.repository,
-        ["worktree", "remove"] + (isOffload ? ["--force"] : []) + ["--", allocation.path])
+      _ = try git(allocation.repository, ["worktree", "remove", "--", allocation.path])
     }
     try completeRemoval(&allocation)
     recordAttempt(&allocation, event: event, reasons: [])
