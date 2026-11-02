@@ -29,7 +29,7 @@ The default is no grant until setup. Global policy covers future managed allocat
 
 `wf cleanup-policy enable|show|revoke --global` controls global authority. `exclude|include --repo PATH` edits the exclusion list. Exclusion atomically clears derived grants for that repository but preserves explicit allocation grants. Inclusion affects future starts only. `migrate --global` explicitly enrolls existing retained or blocked allocations with verified identity and no policy. Recorded revocations, pending removals, restored allocations, and exclusions prevent migration. Migration is atomic and resets eligibility; it does not remove checkouts. Sweep and reload never perform migration.
 
-`wf cleanup-policy show|enable|revoke --repo PATH` is operator setup, not a model tool action. Standing policy defaults to 60 seconds of grace and grants no disposable paths. Normal Pi start under saved authority needs no dialog. Without it, normal start is retained without cleanup authority. Model requests for new authority fail with operator CLI instructions, never synthesized consent.
+`wf cleanup-policy show|enable|revoke --repo PATH` is operator setup, not a model tool action. Standing policy records a default 60-second grace value, but inherited allocations wait at least 24 hours after eligibility before offload. Explicit allocation grants retain their configured grace period. Standing policy grants no disposable paths. Normal Pi start under saved authority needs no dialog. Without it, normal start is retained without cleanup authority. Model requests for new authority fail with operator CLI instructions, never synthesized consent.
 
 Repository revocation atomically removes the standing grant and all derived allocation grants and eligibility. Independent explicit grants, owners, and recovery records remain. Any pending derived removal blocks the entire revocation. Explicit allocation grants clear inherited provenance; allocation revocation clears both forms of authority. A new policy generation applies only to future creations unless the operator explicitly migrates eligible managed allocations. Sweep, restore, and reload never re-enroll an allocation. Revocations record a durable refusal of later standing-policy migration. Global revocation preserves independent repository and explicit grants. Pending derived removal blocks global revocation and exclusion without partial changes.
 
@@ -40,7 +40,7 @@ Age, command exit, and a saved commit do not prove that those users stopped.
 
 Removal requires matching allocation identity, a non-primary checkout, no unpreserved changes, and an exact recovery reference.
 Workfree creates the recovery reference in the surviving local repository before recording removal intent.
-Modified, staged, and untracked files block cleanup.
+Under a recoverable policy, Workfree writes staged contents to an ancestor commit and tracked and untracked working-tree contents to a final checkpoint commit without changing the checkout's index or branch during snapshot creation. Restore checks out the final working-tree state; the staged snapshot remains in its commit history, not in the restored index. Workfree pushes the final commit to an allocation-specific `workfree/offload/` branch on `origin` and verifies the remote commit before removal. It then advances the checkout to that commit without overwriting working files. Removal refuses a checkout that becomes dirty after this step. A failed removal can leave the branch and index at the checkpoint; both prior states remain in the remote commits. A missing remote or failed push retains the checkout. Legacy cleanup without a recoverable policy still requires unchanged tracked and untracked files.
 Ignored files block cleanup unless an explicit policy names their generated path as disposable.
 Tracked contents, aliases, and paths outside the checkout cannot qualify as disposable output.
 Git operations in progress also block cleanup.
@@ -50,8 +50,7 @@ A replacement checkout at the same path must not satisfy an old removal request.
 Git registration checks compare normalized paths, including aliases and paths that no longer exist.
 A missing directory with a remaining registration is not a completed removal.
 
-Workfree calls `simgit remove` without destructive flags.
-It never deletes branches automatically, discards dirty files, or commits work to satisfy cleanup.
+Legacy cleanup and policy offload call the provider's removal command without dirty-removal flags. Workfree never deletes branches automatically. It does not change the checkout's index to create the checkpoint, but it advances the branch and index to the published checkpoint before removal.
 
 ## Persistence and failure
 

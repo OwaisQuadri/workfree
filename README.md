@@ -90,7 +90,7 @@ wf start feature/example --repo "$PWD"
 
 Repository-specific setup records authority in the private registry for the repository's canonical Git common directory, persistent volume identifier, and inode. Only new allocations inherit it without explicit migration. Repository replacement at the same path does not inherit repository-specific authority. Global authority covers new repositories too. Exclusions use canonical primary-repository paths, so they survive replacement at the same path. A repository-specific policy takes precedence over the global policy.
 
-Normal Pi starts inherit the saved policy without a dialog. Without a policy, normal starts remain valid but unauthorized for cleanup. The default grace period is 60 seconds. Standing policy grants no disposable paths, so ignored files remain protected.
+Normal Pi starts inherit the saved policy without a dialog. Without a policy, normal starts remain valid but unauthorized for cleanup. Inherited allocations wait at least 24 hours after the last blocking owner or conversation leaves, even though policy setup still records a default grace value of 60 seconds. Explicit per-allocation grants use their configured grace value. Standing policy grants no disposable paths, so ignored files remain protected.
 
 Revoke repository authority with:
 
@@ -116,9 +116,10 @@ The first eligible event starts the grace period. Acquiring an owner resets it.
 Owner releases and later sweeps evaluate eligibility again.
 New authority requires an explicit operator CLI setup or allocation grant. The model-facing tool cannot grant permission and returns concrete setup instructions instead of asking for confirmation. Direct shell grants record the operator's instruction without a second prompt. Explicit allocation grants replace inherited provenance; allocation revocation never re-enrolls under a standing policy.
 
-Each removal preserves the exact commit under `refs/workfree/recovery/` in the surviving local repository.
+Policy offload snapshots tracked and untracked contents in a flagged commit on `origin` under `workfree/offload/<allocation>`. Removal waits for a verified push, then advances the checkout's branch and index to that commit without overwriting working files. The provider refuses removal if new changes appear. A failed removal can leave that checkout at the checkpoint; the prior staged and working states remain in the remote history. Missing or failed remotes retain the checkout. Ignored files remain blocked unless explicitly disposable. The primary checkout remains in place.
+Each removal also preserves the exact commit under `refs/workfree/recovery/` in the surviving local repository.
 Restore recreates that commit on a fresh branch using the recorded provider. It refuses an occupied destination.
-This protects against checkout removal, not loss of the surviving repository or disk.
+The local recovery reference protects legacy cleanup against checkout removal, not loss of the surviving repository or disk.
 Recovery references have no automatic expiry.
 
 Use `--disposable-path <relative-path>` only for an explicitly disposable generated directory. Repeat it for several approved generated roots, for example `--disposable-path .build --disposable-path node_modules`. Disposable paths require a direct operator allocation grant, not a model request or standing repository policy.
