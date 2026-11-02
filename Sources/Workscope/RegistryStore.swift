@@ -95,11 +95,12 @@ final class RegistryStore {
     try transaction { try saveAllocation(allocation, isNew: isNew) }
   }
 
-  func saveRepairedIdentity(_ allocation: Allocation) throws {
+  func saveRepairedIdentity(_ allocation: Allocation, previousIdentity: String? = nil) throws {
     try transaction {
       let stable = try repositoryIdentity(allocation.repository)
-      if stable != allocation.repositoryIdentity,
-        let policy = try repositoryCleanupPolicy(allocation.repositoryIdentity, isExact: true)
+      let old = previousIdentity ?? allocation.repositoryIdentity
+      if stable != old,
+        let policy = try repositoryCleanupPolicy(old, isExact: true)
       {
         try require(
           try repositoryCleanupPolicy(stable, isExact: true) == nil,

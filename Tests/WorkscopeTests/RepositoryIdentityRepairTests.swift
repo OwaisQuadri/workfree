@@ -51,6 +51,52 @@ final class RepositoryIdentityRepairTests: XCTestCase {
     }
   }
 
+  func testExplicitReplacementRepairPreservesOriginalAllocationAndEnablesMigration() throws {
+    let fixture = try Fixture()
+    let allocation = try legacyAllocation(fixture, isChangedInode: true)
+    let oldMarker = try Data(
+      contentsOf: URL(fileURLWithPath: allocation.admin! + "/workfree-allocation"))
+    _ = try fixture.registry.enableGlobalCleanupPolicy()
+    XCTAssertThrowsError(try fixture.registry.repairRepositoryIdentity(allocation.id))
+    XCTAssertNotEqual(fixture.wait(try fixture.cli(["repair-identity", allocation.id])), 0)
+    XCTAssertEqual(
+      fixture.wait(
+        try fixture.cli([
+          "repair-identity", allocation.id, "--accept-replaced-repository",
+        ])), 0)
+    let repaired = try fixture.registry.inspect(allocation.id)
+    XCTAssertEqual(repaired.repositoryIdentity, try repositoryIdentity(fixture.repository))
+    XCTAssertEqual(repaired.path, allocation.path)
+    XCTAssertNotEqual(
+      try Data(contentsOf: URL(fileURLWithPath: repaired.admin! + "/workfree-allocation")),
+      oldMarker)
+    try verifyIdentity(repaired)
+    XCTAssertEqual(
+      try fixture.registry.migrateGlobalCleanupPolicy(allocation.id).map(\.id), [allocation.id])
+    XCTAssertEqual(try fixture.registry.inspect(allocation.id).phase, .retained)
+  }
+
+  func testReplacementRepairRefusesWrongMarkerAndRetriesReplacedMarker() throws {
+    let fixture = try Fixture()
+    let invalid = try legacyAllocation(fixture, isChangedInode: true)
+    let markerPath = invalid.admin! + "/workfree-allocation"
+    try Data("wrong".utf8).write(to: URL(fileURLWithPath: markerPath))
+    XCTAssertThrowsError(
+      try fixture.registry.repairRepositoryIdentity(
+        invalid.id, isRepositoryReplacementAllowed: true))
+    XCTAssertEqual(
+      try fixture.registry.inspect(invalid.id).repositoryIdentity, invalid.repositoryIdentity)
+
+    let retry = try legacyAllocation(fixture, isChangedInode: true)
+    var rebound = retry
+    rebound.repositoryIdentity = try repositoryIdentity(fixture.repository)
+    try JSONEncoder().encode([rebound.id, rebound.repositoryIdentity, rebound.path]).write(
+      to: URL(fileURLWithPath: retry.admin! + "/workfree-allocation"))
+    _ = try fixture.registry.repairRepositoryIdentity(
+      retry.id, isRepositoryReplacementAllowed: true)
+    try verifyIdentity(fixture.registry.inspect(retry.id))
+  }
+
   func testTargetedMigrationLeavesInvalidAllocationBlockedAndStillHonorsExclusions() throws {
     let fixture = try Fixture()
     let valid = try legacyAllocation(fixture)

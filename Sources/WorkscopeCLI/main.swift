@@ -22,7 +22,7 @@ let help = """
     close-scope ID --owner TOKEN
     entry-exit ID --owner TOKEN --status INTEGER
     recover ID
-    repair-identity ID
+    repair-identity ID [--accept-replaced-repository]
     cleanup-policy show|enable|revoke --repo PATH [--grace-seconds 60]
     cleanup-policy show|enable|revoke --global [--grace-seconds 60]
     cleanup-policy exclude|include --repo PATH
@@ -57,6 +57,7 @@ struct Arguments {
   var isCowRequired = false
   var isCleanupAuthorized = false
   var isCleanupPolicyRequired = false
+  var isRepositoryReplacementAllowed = false
   var isJSON = false
   var isRefresh = false
   var isDetailed = false
@@ -83,6 +84,7 @@ struct Arguments {
         case "--allow-cleanup": isCleanupAuthorized = true
         case "--require-cleanup-policy": isCleanupPolicyRequired = true
         case "--require-cow": isCowRequired = true
+        case "--accept-replaced-repository": isRepositoryReplacementAllowed = true
         case "--json": isJSON = true
         case "--refresh": isRefresh = true
         case "--detailed", "--details": isDetailed = true
@@ -136,8 +138,8 @@ struct Arguments {
     case "release", "finish", "close-scope": allowed = ["--owner"]
     case "entry-exit": allowed = ["--owner", "--status"]
     case "run": allowed = ["--owner", "--"]
-    case "inspect", "list", "keep", "unkeep", "recover", "repair-identity", "revoke-cleanup",
-      "restore", "preview",
+    case "repair-identity": allowed = ["--accept-replaced-repository"]
+    case "inspect", "list", "keep", "unkeep", "recover", "revoke-cleanup", "restore", "preview",
       "sweep":
       allowed = []
     case "authorize-cleanup": allowed = ["--grace-seconds", "--disposable-path"]
@@ -331,7 +333,9 @@ do {
         }
         allocation = try registry.entryExit(id, owner: arguments.value("--owner"), status: status)
       case "recover": allocation = try registry.recover(id)
-      case "repair-identity": allocation = try registry.repairRepositoryIdentity(id)
+      case "repair-identity":
+        allocation = try registry.repairRepositoryIdentity(
+          id, isRepositoryReplacementAllowed: arguments.isRepositoryReplacementAllowed)
       case "authorize-cleanup":
         guard let grace = TimeInterval(arguments.options["--grace-seconds"] ?? "60") else {
           throw WorkscopeError("Invalid grace period")
