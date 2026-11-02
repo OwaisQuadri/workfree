@@ -63,6 +63,34 @@ private func pushOffload(_ allocation: Allocation) throws -> (
   return (commit, source, stagedTree)
 }
 
+func advanceCheckout(_ allocation: Allocation, offload: (
+  commit: String, source: String, stagedTree: String
+)) throws {
+  let path = allocation.path
+  let index = try git(path, ["rev-parse", "--path-format=absolute", "--git-path", "index"])
+  let baseline = try Data(contentsOf: URL(fileURLWithPath: index))
+  try require(
+    try git(path, ["write-tree"]) == offload.stagedTree,
+    "Checkout changed before index replacement")
+  let lock = index + ".lock"
+  let descriptor = open(lock, O_WRONLY | O_CREAT | O_EXCL, mode_t(0o600))
+  try require(descriptor >= 0, "Cannot lock checkout index")
+  _ = close(descriptor)
+  defer { _ = unlink(lock) }
+  let shadow = lock + ".checkpoint"
+  defer { _ = unlink(shadow) }
+  try require(
+    try git(path, ["rev-parse", "HEAD"]) == offload.source
+      && Data(contentsOf: URL(fileURLWithPath: index)) == baseline,
+    "Checkout changed before index replacement")
+  _ = try command(
+    "/usr/bin/env",
+    ["GIT_INDEX_FILE=" + shadow, "/usr/bin/git", "-C", path, "read-tree", offload.commit])
+  try require(rename(shadow, lock) == 0, "Cannot prepare checkpoint index")
+  _ = try git(path, ["update-ref", "HEAD", offload.commit, offload.source])
+  try require(rename(lock, index) == 0, "Cannot install checkpoint index")
+}
+
 func validateDisposablePath(_ path: String) throws {
   let components = path.split(separator: "/", omittingEmptySubsequences: false)
   try require(
@@ -291,8 +319,15 @@ func cleanup(_ allocation: inout Allocation, store: RegistryStore, event: String
     allocation.reclaimedBytes = bytes
     recordAttempt(&allocation, event: event, reasons: [])
     try store.save(allocation)
-    if isOffload { _ = try git(allocation.path, ["reset", "--mixed", head]) }
-    for target in targets { try FileManager.default.removeItem(atPath: target) }
+    if let offload { try advanceCheckout(allocation, offload: offload) }
+    for target in targets {
+      if isOffload {
+        let relative = String(target.dropFirst(allocation.path.count + 1))
+        _ = try git(allocation.path, ["--literal-pathspecs", "clean", "-fdX", "--", relative])
+      } else {
+        try FileManager.default.removeItem(atPath: target)
+      }
+    }
     switch allocation.provider {
     case .simgit:
       _ = try command(

@@ -371,6 +371,27 @@ final class CleanupTests: XCTestCase {
       try String(contentsOfFile: allocation.path + "/tracked", encoding: .utf8), "later")
   }
 
+  func testLateStagedChangeBlocksIndexReplacement() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.registry.start(branch: UUID().uuidString, repository: fixture.repository)
+    let source = try git(allocation.path, ["rev-parse", "HEAD"])
+    let stagedTree = try git(allocation.path, ["write-tree"])
+    let checkpoint = try git(
+      allocation.path, ["commit-tree", stagedTree, "-p", source, "-m", "Checkpoint"])
+    let tracked = URL(fileURLWithPath: allocation.path + "/tracked")
+    let original = try Data(contentsOf: tracked)
+    try Data("late staged version".utf8).write(to: tracked)
+    _ = try git(allocation.path, ["add", "tracked"])
+    try original.write(to: tracked)
+    let lateTree = try git(allocation.path, ["write-tree"])
+    XCTAssertThrowsError(
+      try advanceCheckout(
+        allocation, offload: (commit: checkpoint, source: source, stagedTree: stagedTree)))
+    XCTAssertEqual(try git(allocation.path, ["rev-parse", "HEAD"]), source)
+    XCTAssertEqual(try git(allocation.path, ["write-tree"]), lateTree)
+    XCTAssertEqual(try git(allocation.path, ["show", ":tracked"]), "late staged version")
+  }
+
   func testProviderRemovalRefusesChangesAfterCheckpoint() throws {
     let fixture = try Fixture()
     for provider: WorktreeProvider in [.git, .simgit] {
