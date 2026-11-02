@@ -98,8 +98,9 @@ final class RegistryStore {
   func saveRepairedIdentity(_ allocation: Allocation) throws {
     try transaction {
       let stable = try repositoryIdentity(allocation.repository)
-      if stable != allocation.repositoryIdentity,
-        let policy = try repositoryCleanupPolicy(allocation.repositoryIdentity, isExact: true)
+      let old = allocation.repositoryIdentity
+      if stable != old,
+        let policy = try repositoryCleanupPolicy(old, isExact: true)
       {
         try require(
           try repositoryCleanupPolicy(stable, isExact: true) == nil,
@@ -136,14 +137,13 @@ final class RegistryStore {
         return parts.count >= 3 && UInt64(parts[parts.count - 2]) != nil
           && parts.dropLast(2).joined(separator: ":") == common
       }
-      try require(candidates.count <= 1, "Conflicting repository cleanup policies")
-      guard let candidate = candidates.first else { return nil }
       var info = stat()
       try require(stat(common, &info) == 0, "Cannot inspect repository policy identity")
-      try require(
-        candidate.repositoryIdentity == "\(common):\(info.st_dev):\(info.st_ino)",
-        "Repository policy identity changed; repair its allocation identity first")
-      return candidate
+      let matching = candidates.filter {
+        $0.repositoryIdentity == "\(common):\(info.st_dev):\(info.st_ino)"
+      }
+      try require(matching.count <= 1, "Conflicting repository cleanup policies")
+      return matching.first
     }
     let policy = try JSONDecoder().decode(RepositoryCleanupPolicy.self, from: Data(data.utf8))
     try require(

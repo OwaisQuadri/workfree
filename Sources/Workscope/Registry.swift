@@ -88,12 +88,62 @@ public struct Registry: Sendable {
     try withRegistry(stateDirectory) { try $0.migrateGlobalCleanupPolicy(id) }
   }
 
-  public func repairRepositoryIdentity(_ id: String) throws -> Allocation {
+  public func repairRepositoryIdentity(
+    _ id: String, isRepositoryReplacementAllowed: Bool = false
+  ) throws -> Allocation {
     try withRegistry(stateDirectory) { store in
       var allocation = try store.allocation(id)
       try require(
         [.retained, .blocked].contains(allocation.phase) && !allocation.isRemovalPending
           && allocation.recovery == nil, "Allocation is unavailable for identity repair")
+      let current = try repositoryIdentity(allocation.repository)
+      if isRepositoryReplacementAllowed && current != allocation.repositoryIdentity {
+        let previousIdentity = allocation.repositoryIdentity
+        let previousParts = previousIdentity.split(separator: ":")
+        let currentParts = current.split(separator: ":")
+        try require(
+          previousParts.count >= 3 && currentParts.count >= 3
+            && previousParts.dropLast(2).elementsEqual(currentParts.dropLast(2)),
+          "Repository common directory changed")
+        allocation.repositoryIdentity = current
+        allocation.repositoryVolumeUUID = try repositoryVolumeUUID(allocation.repository)
+        try verifyRepository(allocation)
+        try require(
+          try isRegistered(allocation.repository, allocation.path),
+          "Checkout is not registered with the repository")
+        let markerPath = allocation.admin! + "/workfree-allocation"
+        let descriptor = try privateFile(markerPath, isCreating: false)
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var previous = allocation
+        previous.repositoryIdentity = previousIdentity
+        let contents = try handle.readToEnd()
+        let updatedMarker = try marker(allocation)
+        try require(
+          contents == marker(previous) || contents == updatedMarker,
+          "Allocation marker changed")
+        if contents != updatedMarker {
+          let temporary = markerPath + ".replacement-" + UUID().uuidString.lowercased()
+          defer { _ = unlink(temporary) }
+          let newDescriptor = try privateFile(temporary, isCreating: true)
+          let newHandle = FileHandle(fileDescriptor: newDescriptor, closeOnDealloc: true)
+          try newHandle.write(contentsOf: updatedMarker)
+          try require(fsync(newDescriptor) == 0, "Cannot sync replacement marker")
+          try newHandle.close()
+          try require(rename(temporary, markerPath) == 0, "Cannot replace allocation marker")
+          try syncDirectory(allocation.admin!)
+        }
+        allocation.eligibleSince = nil
+        allocation.isCleanupAuthorized = false
+        allocation.cleanupPolicy = nil
+        allocation.cleanupPolicySourceID = nil
+        recordAttempt(
+          &allocation, event: "repository-replacement",
+          reasons: ["Rebound verified linked checkout; old cleanup authority was not transferred"])
+        try store.saveRepairedIdentity(allocation)
+        try verifyIdentity(allocation)
+        return allocation
+      }
       if allocation.repositoryVolumeUUID == nil {
         let parts = allocation.repositoryIdentity.split(separator: ":")
         try require(parts.count >= 3, "Invalid repository identity")
