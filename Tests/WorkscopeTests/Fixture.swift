@@ -27,6 +27,10 @@ final class Fixture {
     try Data("ignored/\n".utf8).write(to: URL(fileURLWithPath: repository + "/.gitignore"))
     _ = try git(repository, ["add", "."])
     _ = try git(repository, ["commit", "-m", "Fixture"])
+    let remote = root + "/remote.git"
+    _ = try git(root, ["init", "--bare", remote])
+    _ = try git(repository, ["remote", "add", "origin", remote])
+    _ = try git(repository, ["push", "origin", "main"])
   }
 
   deinit { try? FileManager.default.removeItem(atPath: root) }

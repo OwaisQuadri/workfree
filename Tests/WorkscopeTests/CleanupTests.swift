@@ -19,7 +19,10 @@ final class CleanupTests: XCTestCase {
       _ = try fixture.registry.sweep()
       let removed = try fixture.registry.inspect(allocation.id)
       XCTAssertEqual(removed.phase, .removed, removed.reason ?? "")
-      XCTAssertEqual(removed.recovery?.commit, commit)
+      _ = try command(
+        "/usr/bin/git",
+        ["-C", fixture.repository, "merge-base", "--is-ancestor", commit,
+         removed.recovery!.commit])
       XCTAssertNotNil(removed.owners["task:" + allocation.id])
       XCTAssertFalse(FileManager.default.fileExists(atPath: allocation.path))
       _ = try fixture.registry.sweep()
@@ -30,7 +33,7 @@ final class CleanupTests: XCTestCase {
       _ = try fixture.registry.restore(allocation.id)
       XCTAssertEqual(
         try fixture.registry.status(since: nil, isLiveMeasured: false).removedCount, count)
-      XCTAssertEqual(try git(allocation.path, ["rev-parse", "HEAD"]), commit)
+      XCTAssertEqual(try git(allocation.path, ["rev-parse", "HEAD"]), removed.recovery?.commit)
       XCTAssertEqual(
         try String(contentsOfFile: allocation.path + "/tracked", encoding: .utf8), "saved result")
     }
@@ -65,12 +68,12 @@ final class CleanupTests: XCTestCase {
     XCTAssertEqual(retained.reason, "Retained pin owner: pin:" + allocation.id)
     XCTAssertTrue(
       try fixture.registry.preview(allocation.id)[0].reasons.contains {
-        $0.contains("Changed, staged")
+        $0.contains("Retained pin owner")
       })
 
     let released = try fixture.registry.unkeep(allocation.id)
-    XCTAssertEqual(released.phase, .retained)
-    XCTAssertTrue(released.reason?.contains("Changed, staged") == true)
+    XCTAssertEqual(released.phase, .removed, released.reason ?? "")
+    _ = try fixture.registry.restore(allocation.id)
     XCTAssertEqual(
       try String(contentsOfFile: allocation.path + "/tracked", encoding: .utf8), "unsaved")
   }
@@ -94,17 +97,17 @@ final class CleanupTests: XCTestCase {
 
   func testPolicyPreservesUnsavedFilesAndOnlyDiscardsApprovedIgnoredOutput() throws {
     let fixture = try Fixture()
-    for relative in ["tracked", "untracked", "ignored/private"] {
-      let allocation = try fixture.start(isAuthorized: false)
-      try FileManager.default.createDirectory(
-        atPath: allocation.path + "/ignored", withIntermediateDirectories: true)
-      let path = allocation.path + "/" + relative
-      try Data("valuable".utf8).write(to: URL(fileURLWithPath: path))
-      _ = try fixture.registry.authorizeCleanup(allocation.id, graceSeconds: 0)
-      _ = try fixture.registry.sweep()
-      XCTAssertTrue(FileManager.default.fileExists(atPath: path), relative)
-      XCTAssertNotNil(try fixture.registry.inspect(allocation.id).reason)
-    }
+    let allocation = try fixture.start(isAuthorized: false)
+    try Data("valuable".utf8).write(to: URL(fileURLWithPath: allocation.path + "/tracked"))
+    try Data("valuable".utf8).write(to: URL(fileURLWithPath: allocation.path + "/untracked"))
+    _ = try fixture.registry.authorizeCleanup(allocation.id, graceSeconds: 0)
+    _ = try fixture.registry.sweep()
+    XCTAssertEqual(try fixture.registry.inspect(allocation.id).phase, .removed)
+    _ = try fixture.registry.restore(allocation.id)
+    XCTAssertEqual(
+      try String(contentsOfFile: allocation.path + "/tracked", encoding: .utf8), "valuable")
+    XCTAssertEqual(
+      try String(contentsOfFile: allocation.path + "/untracked", encoding: .utf8), "valuable")
     let generated = try fixture.start(isAuthorized: false)
     try FileManager.default.createDirectory(
       atPath: generated.path + "/ignored", withIntermediateDirectories: true)
@@ -139,7 +142,7 @@ final class CleanupTests: XCTestCase {
     _ = try fixture.registry.sweep()
     let blocked = try fixture.registry.inspect(allocation.id)
     XCTAssertEqual(blocked.phase, .blocked)
-    XCTAssertTrue(blocked.reason?.contains("Changed, staged") == true)
+    XCTAssertTrue(blocked.reason?.contains("Disposable path contains tracked files") == true)
     XCTAssertFalse(blocked.isRemovalPending)
     XCTAssertNil(blocked.recovery)
     XCTAssertTrue(
@@ -170,7 +173,7 @@ final class CleanupTests: XCTestCase {
     XCTAssertNotNil(result.recovery)
   }
 
-  func testDisposableParentCannotHideUnignoredFiles() throws {
+  func testDisposableParentPreservesUnignoredFilesInCheckpoint() throws {
     let fixture = try Fixture()
     let allocation = try fixture.start(isAuthorized: false)
     try Data("ignored/\nmixed/generated\n".utf8).write(
@@ -184,8 +187,11 @@ final class CleanupTests: XCTestCase {
     _ = try fixture.registry.authorizeCleanup(
       allocation.id, graceSeconds: 0, disposablePaths: ["mixed"])
     _ = try fixture.registry.sweep()
-    XCTAssertNotEqual(try fixture.registry.inspect(allocation.id).phase, .removed)
-    XCTAssertTrue(FileManager.default.fileExists(atPath: allocation.path + "/mixed/notes"))
+    XCTAssertEqual(try fixture.registry.inspect(allocation.id).phase, .removed)
+    _ = try fixture.registry.restore(allocation.id)
+    XCTAssertEqual(
+      try String(contentsOfFile: allocation.path + "/mixed/notes", encoding: .utf8),
+      "preserve")
   }
 
   func testChangedRecoveryReferenceAndOccupiedRestoreDestinationFailClosed() throws {
@@ -273,5 +279,79 @@ final class CleanupTests: XCTestCase {
     XCTAssertNotNil(recovered.owners["task:" + allocation.id])
     XCTAssertEqual(
       try fixture.registry.recover(pending.id).recovery?.reference, recovered.recovery?.reference)
+  }
+
+  func testInheritedPolicyOffloadsChangesOnlyAfterOneDayAndConfirmedPush() throws {
+    let fixture = try Fixture()
+    _ = try fixture.registry.enableGlobalCleanupPolicy()
+    let allocation = try fixture.start(isAuthorized: false)
+    try Data("edited".utf8).write(to: URL(fileURLWithPath: allocation.path + "/tracked"))
+    try Data("new".utf8).write(to: URL(fileURLWithPath: allocation.path + "/untracked"))
+    _ = try fixture.registry.sweep()
+    let waiting = try fixture.registry.inspect(allocation.id)
+    XCTAssertEqual(waiting.phase, .retained)
+    XCTAssertNotNil(waiting.eligibleSince)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: allocation.path))
+
+    var stale = waiting
+    stale.eligibleSince = Date(timeIntervalSinceNow: -86_401)
+    try fixture.inject(stale)
+    _ = try git(fixture.repository, ["remote", "remove", "origin"])
+    _ = try fixture.registry.sweep()
+    XCTAssertTrue(FileManager.default.fileExists(atPath: allocation.path))
+    XCTAssertTrue(try fixture.registry.inspect(allocation.id).reason?.contains("origin") == true)
+
+    _ = try git(fixture.repository, ["remote", "add", "origin", fixture.root + "/remote.git"])
+    _ = try fixture.registry.sweep()
+    let removed = try fixture.registry.inspect(allocation.id)
+    XCTAssertEqual(removed.phase, .removed, removed.reason ?? "")
+    let reference = "refs/heads/workfree/offload/" + allocation.id
+    XCTAssertEqual(
+      try git(fixture.repository, ["ls-remote", "--heads", "origin", reference])
+        .split(separator: "\t").first.map(String.init), removed.recovery?.commit)
+    _ = try fixture.registry.restore(allocation.id)
+    XCTAssertEqual(
+      try String(contentsOfFile: allocation.path + "/tracked", encoding: .utf8), "edited")
+    XCTAssertEqual(
+      try String(contentsOfFile: allocation.path + "/untracked", encoding: .utf8), "new")
+  }
+
+  func testGitProviderOffloadPreservesStagedAndUnstagedChanges() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.registry.start(
+      branch: UUID().uuidString, repository: fixture.repository, provider: .git)
+    try Data("staged".utf8).write(to: URL(fileURLWithPath: allocation.path + "/tracked"))
+    _ = try git(allocation.path, ["add", "tracked"])
+    try Data("unstaged".utf8).write(to: URL(fileURLWithPath: allocation.path + "/tracked"))
+    _ = try fixture.registry.authorizeCleanup(allocation.id, graceSeconds: 0)
+    _ = try fixture.registry.sweep()
+    let removed = try fixture.registry.inspect(allocation.id)
+    XCTAssertEqual(removed.phase, .removed, removed.reason ?? "")
+    XCTAssertEqual(
+      try git(fixture.repository, ["show", removed.recovery!.commit + "^:tracked"]), "staged")
+    XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.repository + "/tracked"))
+    _ = try fixture.registry.restore(allocation.id)
+    XCTAssertEqual(
+      try String(contentsOfFile: allocation.path + "/tracked", encoding: .utf8), "unstaged")
+  }
+
+  func testPolicyDoesNotOffloadUnapprovedIgnoredFiles() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.start(isAuthorized: false)
+    try FileManager.default.createDirectory(
+      atPath: allocation.path + "/ignored", withIntermediateDirectories: true)
+    let ignored = allocation.path + "/ignored/private"
+    try Data("private".utf8).write(to: URL(fileURLWithPath: ignored))
+    _ = try fixture.registry.authorizeCleanup(allocation.id, graceSeconds: 0)
+    _ = try fixture.registry.sweep()
+    let retained = try fixture.registry.inspect(allocation.id)
+    XCTAssertEqual(retained.phase, .retained)
+    XCTAssertTrue(retained.reason?.contains("Unapproved ignored file") == true)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: ignored))
+    XCTAssertTrue(
+      try git(
+        fixture.repository,
+        ["ls-remote", "--heads", "origin", "refs/heads/workfree/offload/" + allocation.id]
+      ).isEmpty)
   }
 }

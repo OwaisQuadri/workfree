@@ -47,16 +47,21 @@ final class RepositoryCleanupPolicyTests: XCTestCase {
     var eligible = try reloaded.inspect(allocation.id)
     XCTAssertNotNil(eligible.eligibleSince)
     XCTAssertTrue(try isPresent(allocation.path))
-    eligible.eligibleSince = Date().addingTimeInterval(-61)
+    eligible.eligibleSince = Date().addingTimeInterval(-86_401)
     try fixture.inject(eligible)
     _ = try reloaded.sweep()
     let removed = try reloaded.inspect(allocation.id)
     XCTAssertEqual(removed.phase, .removed, removed.reason ?? "")
-    XCTAssertEqual(removed.recovery?.commit, commit)
-    XCTAssertEqual(try git(fixture.repository, ["rev-parse", removed.recovery!.reference]), commit)
+    _ = try command(
+      "/usr/bin/git",
+      ["-C", fixture.repository, "merge-base", "--is-ancestor", commit,
+       removed.recovery!.commit])
+    XCTAssertEqual(
+      try git(fixture.repository, ["rev-parse", removed.recovery!.reference]),
+      removed.recovery?.commit)
     XCTAssertNotNil(removed.owners["task:" + allocation.id])
     let restored = try reloaded.restore(allocation.id)
-    XCTAssertEqual(try git(restored.path, ["rev-parse", "HEAD"]), commit)
+    XCTAssertEqual(try git(restored.path, ["rev-parse", "HEAD"]), removed.recovery?.commit)
     XCTAssertEqual(restored.cleanupPolicySourceID, policy.id)
     XCTAssertNil(restored.eligibleSince)
     XCTAssertEqual(
@@ -116,6 +121,10 @@ final class RepositoryCleanupPolicyTests: XCTestCase {
     XCTAssertNil(try fixture.registry.inspect(revoked.id).cleanupPolicySourceID)
     XCTAssertTrue(try isPresent(revoked.path))
     let removed = try start(fixture)
+    _ = try fixture.registry.sweep()
+    var eligible = try fixture.registry.inspect(removed.id)
+    eligible.eligibleSince = Date().addingTimeInterval(-86_401)
+    try fixture.inject(eligible)
     _ = try fixture.registry.sweep()
     XCTAssertEqual(try fixture.registry.inspect(removed.id).phase, .removed)
     _ = try fixture.registry.revokeCleanup(removed.id)
@@ -250,6 +259,10 @@ final class RepositoryCleanupPolicyTests: XCTestCase {
       repository: fixture.repository, graceSeconds: 0)
     let allocation = try start(fixture)
     _ = try fixture.registry.sweep()
+    var eligible = try fixture.registry.inspect(allocation.id)
+    eligible.eligibleSince = Date().addingTimeInterval(-86_401)
+    try fixture.inject(eligible)
+    _ = try fixture.registry.sweep()
     let removed = try fixture.registry.inspect(allocation.id)
     _ = try fixture.registry.revokeRepositoryCleanupPolicy(repository: fixture.repository)
     _ = try fixture.registry.enableRepositoryCleanupPolicy(
@@ -275,7 +288,7 @@ final class RepositoryCleanupPolicyTests: XCTestCase {
     _ = try fixture.registry.release(owned.id, owner: "workspace")
     _ = try fixture.registry.closeScope(owned.id, owner: "execution")
     XCTAssertTrue(try isPresent(owned.path))
-    XCTAssertEqual(try fixture.registry.unkeep(owned.id).phase, .removed)
+    XCTAssertEqual(try fixture.registry.unkeep(owned.id).phase, .retained)
     let conversation = try Registry(
       stateDirectory: fixture.registry.stateDirectory,
       conversation: ConversationContext(sessionID: "live", processID: getpid()))

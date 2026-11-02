@@ -1,4 +1,70 @@
+import Darwin
 import Foundation
+
+private func cleanupGrace(_ allocation: Allocation) -> TimeInterval {
+  let configured = allocation.cleanupPolicy?.graceSeconds ?? 0
+  return allocation.cleanupPolicySourceID == nil ? configured : max(configured, 86_400)
+}
+
+private func checkpointTree(_ path: String) throws -> String {
+  var template = Array((NSTemporaryDirectory() + "/workfree-index.XXXXXX").utf8CString)
+  guard let directory = mkdtemp(&template) else {
+    throw WorkscopeError("Cannot create checkpoint index directory")
+  }
+  let index = String(cString: directory) + "/index"
+  defer { try? FileManager.default.removeItem(atPath: String(cString: directory)) }
+  func indexedGit(_ arguments: [String]) throws -> String {
+    try command(
+      "/usr/bin/env",
+      ["GIT_INDEX_FILE=" + index, "/usr/bin/git", "-C", path] + arguments
+    ).trimmingCharacters(in: .newlines)
+  }
+  _ = try indexedGit(["read-tree", "HEAD"])
+  _ = try indexedGit(["add", "-A", "--", "."])
+  return try indexedGit(["write-tree"])
+}
+
+private func pushOffload(_ allocation: Allocation) throws -> (
+  commit: String, source: String, stagedTree: String
+) {
+  let path = allocation.path
+  let source = try git(path, ["rev-parse", "--verify", "HEAD^{commit}"])
+  let stagedTree = try git(path, ["write-tree"])
+  let tree = try checkpointTree(path)
+  let remote = try git(path, ["remote", "get-url", "--push", "origin"])
+  try require(!remote.isEmpty, "Offload requires an origin push remote")
+  let reference = "refs/heads/workfree/offload/" + allocation.id
+  let existing = try git(path, ["ls-remote", "--heads", "origin", reference])
+    .split(separator: "\t").first.map(String.init)
+  if let existing {
+    try require(
+      try git(path, ["cat-file", "-t", existing]) == "commit",
+      "Offload branch changed outside this checkout")
+    _ = try command(
+      "/usr/bin/git", ["-C", path, "merge-base", "--is-ancestor", source, existing])
+    let previousTree = try git(path, ["rev-parse", existing + "^{tree}"])
+    let previousStagedTree = try git(path, ["rev-parse", existing + "^^{tree}"])
+    if previousTree == tree && previousStagedTree == stagedTree {
+      return (existing, source, stagedTree)
+    }
+  }
+  var parent = existing ?? source
+  if stagedTree != (try git(path, ["rev-parse", parent + "^{tree}"])) {
+    parent = try git(
+      path,
+      [
+        "commit-tree", stagedTree, "-p", parent, "-m",
+        "workfree offload staged: " + allocation.id,
+      ])
+  }
+  let commit = try git(
+    path, ["commit-tree", tree, "-p", parent, "-m", "workfree offload: " + allocation.id])
+  _ = try git(path, ["push", "origin", commit + ":" + reference])
+  let published = try git(path, ["ls-remote", "--heads", "origin", reference])
+    .split(separator: "\t").first.map(String.init)
+  try require(published == commit, "Offload push was not confirmed")
+  return (commit, source, stagedTree)
+}
 
 func validateDisposablePath(_ path: String) throws {
   let components = path.split(separator: "/", omittingEmptySubsequences: false)
@@ -44,12 +110,16 @@ func disposableTargets(_ allocation: Allocation) throws -> [String] {
       "Disposable path contains an alias: \(relative)")
     let tracked = try git(
       allocation.path, ["--literal-pathspecs", "ls-files", "-z", "--", relative])
-    try require(tracked.isEmpty, "Disposable path contains tracked files: \(relative)")
+    let committed = try git(
+      allocation.path, ["--literal-pathspecs", "ls-tree", "-r", "HEAD", "--", relative])
+    try require(
+      tracked.isEmpty && committed.isEmpty,
+      "Disposable path contains tracked files: \(relative)")
     return try isPresent(path) ? path : nil
   }
 }
 
-func verifyFiles(_ allocation: Allocation) throws -> [String] {
+func verifyFiles(_ allocation: Allocation, isCheckpointAllowed: Bool = false) throws -> [String] {
   try verifyIdentity(allocation)
   guard let admin = allocation.admin else {
     throw WorkscopeError("Missing administrative identity")
@@ -76,7 +146,9 @@ func verifyFiles(_ allocation: Allocation) throws -> [String] {
       "status", "--porcelain=v1", "-z", "--untracked-files=no", "--ignored=no",
       "--ignore-submodules=none",
     ])
-  try require(trackedStatus.isEmpty, "Changed, staged, untracked, or ignored files remain")
+  if !isCheckpointAllowed {
+    try require(trackedStatus.isEmpty, "Changed, staged, untracked, or ignored files remain")
+  }
   let targets = try disposableTargets(allocation)
   var statusPaths = ["."]
   for target in targets {
@@ -95,6 +167,7 @@ func verifyFiles(_ allocation: Allocation) throws -> [String] {
   for entry in status.split(separator: "\0") {
     let text = String(entry)
     guard text.hasPrefix("!! ") else {
+      if isCheckpointAllowed { continue }
       throw WorkscopeError("Changed, staged, untracked, or ignored files remain")
     }
     let relative = String(text.dropFirst(3)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -127,7 +200,7 @@ func cleanupPreview(
   if allocation.isRemovalPending { reasons.append("Removal is pending; use recover") }
   if isFileVerificationRequired || reasons.isEmpty {
     do {
-      _ = try verifyFiles(allocation)
+      _ = try verifyFiles(allocation, isCheckpointAllowed: allocation.cleanupPolicy != nil)
       if allocation.cleanupPolicy == nil {
         let head = try git(allocation.path, ["rev-parse", "HEAD"])
         let refs = try git(
@@ -139,12 +212,12 @@ func cleanupPreview(
   }
   let estimatedBytes = reasons.isEmpty ? measure(allocation.path).privateBytes : 0
   let eligibleAt = allocation.eligibleSince.map {
-    $0.addingTimeInterval(allocation.cleanupPolicy?.graceSeconds ?? 0)
+    $0.addingTimeInterval(cleanupGrace(allocation))
   }
-  if reasons.isEmpty, let policy = allocation.cleanupPolicy {
+  if reasons.isEmpty, allocation.cleanupPolicy != nil {
     if let eligibleAt {
       if eligibleAt > Date() { reasons.append("Eligible after grace period") }
-    } else if policy.graceSeconds > 0 {
+    } else if cleanupGrace(allocation) > 0 {
       reasons.append("Awaiting grace period")
     }
   }
@@ -176,8 +249,8 @@ func cleanup(_ allocation: inout Allocation, store: RegistryStore, event: String
     return
   }
   if allocation.eligibleSince == nil { allocation.eligibleSince = Date() }
-  if let policy = allocation.cleanupPolicy,
-    allocation.eligibleSince!.addingTimeInterval(policy.graceSeconds) > Date()
+  if allocation.cleanupPolicy != nil,
+    allocation.eligibleSince!.addingTimeInterval(cleanupGrace(allocation)) > Date()
   {
     allocation.phase = .retained
     allocation.reason = "Eligible after grace period"
@@ -188,8 +261,12 @@ func cleanup(_ allocation: inout Allocation, store: RegistryStore, event: String
   allocation.phase = .checking
   try store.save(allocation)
   do {
-    _ = try verifyFiles(allocation)
-    let head = try git(allocation.path, ["rev-parse", "--verify", "HEAD^{commit}"])
+    let isOffload = allocation.cleanupPolicy != nil
+    _ = try verifyFiles(allocation, isCheckpointAllowed: isOffload)
+    let offload = try isOffload ? pushOffload(allocation) : nil
+    let head =
+      try offload?.commit
+      ?? git(allocation.path, ["rev-parse", "--verify", "HEAD^{commit}"])
     let reference = "refs/workfree/recovery/" + allocation.id + "/" + UUID().uuidString.lowercased()
     _ = try git(
       allocation.repository, ["-c", "core.fsync=reference", "update-ref", reference, head, ""])
@@ -199,9 +276,18 @@ func cleanup(_ allocation: inout Allocation, store: RegistryStore, event: String
       event: event)
     try verifyRecovery(allocation)
     let bytes = measure(allocation.path).privateBytes
-    let targets = try verifyFiles(allocation)
-    try require(
-      try git(allocation.path, ["rev-parse", "HEAD"]) == head, "HEAD changed during cleanup")
+    let targets = try verifyFiles(allocation, isCheckpointAllowed: isOffload)
+    if let offload {
+      try require(
+        try git(allocation.path, ["rev-parse", "HEAD"]) == offload.source
+          && git(allocation.path, ["write-tree"]) == offload.stagedTree
+          && checkpointTree(allocation.path)
+            == git(allocation.repository, ["rev-parse", head + "^{tree}"]),
+        "Checkout changed during offload")
+    } else {
+      try require(
+        try git(allocation.path, ["rev-parse", "HEAD"]) == head, "HEAD changed during cleanup")
+    }
     allocation.phase = .removing
     allocation.isRemovalPending = true
     allocation.reason = nil
@@ -212,9 +298,13 @@ func cleanup(_ allocation: inout Allocation, store: RegistryStore, event: String
     switch allocation.provider {
     case .simgit:
       _ = try command(
-        "/usr/bin/env", ["simgit", "remove", allocation.path], at: allocation.repository)
+        "/usr/bin/env",
+        ["simgit", "remove"] + (isOffload ? ["--discard-dirty"] : []) + [allocation.path],
+        at: allocation.repository)
     case .git:
-      _ = try git(allocation.repository, ["worktree", "remove", "--", allocation.path])
+      _ = try git(
+        allocation.repository,
+        ["worktree", "remove"] + (isOffload ? ["--force"] : []) + ["--", allocation.path])
     }
     try completeRemoval(&allocation)
     recordAttempt(&allocation, event: event, reasons: [])
