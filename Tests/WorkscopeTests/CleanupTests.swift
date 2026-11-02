@@ -283,6 +283,32 @@ final class CleanupTests: XCTestCase {
       try fixture.registry.recover(pending.id).recovery?.reference, recovered.recovery?.reference)
   }
 
+  func testSweepDefersFileChecksUntilGraceEnds() throws {
+    let fixture = try Fixture()
+    _ = try fixture.registry.enableGlobalCleanupPolicy()
+    let allocation = try fixture.start(isAuthorized: false)
+    _ = try fixture.registry.sweep()
+    let waiting = try fixture.registry.inspect(allocation.id)
+    XCTAssertNotNil(waiting.eligibleSince)
+
+    try Data("changed marker".utf8).write(
+      to: URL(fileURLWithPath: allocation.admin! + "/workfree-allocation"))
+    _ = try fixture.registry.sweep()
+    let stillWaiting = try fixture.registry.inspect(allocation.id)
+    XCTAssertEqual(stillWaiting.reason, "Eligible after grace period")
+    XCTAssertEqual(stillWaiting.eligibleSince, waiting.eligibleSince)
+    let preview = try fixture.registry.preview(allocation.id)
+    XCTAssertTrue(preview.first?.reasons.contains("Allocation marker changed") == true)
+
+    var expired = stillWaiting
+    expired.eligibleSince = Date(timeIntervalSinceNow: -86_401)
+    try fixture.inject(expired)
+    _ = try fixture.registry.sweep()
+    XCTAssertTrue(
+      try fixture.registry.inspect(allocation.id).reason?.contains("Allocation marker changed")
+        == true)
+  }
+
   func testInheritedPolicyOffloadsChangesOnlyAfterOneDayAndConfirmedPush() throws {
     let fixture = try Fixture()
     _ = try fixture.registry.enableGlobalCleanupPolicy()

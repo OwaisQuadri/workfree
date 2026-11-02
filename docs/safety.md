@@ -78,7 +78,7 @@ Do not expire them on a timer.
 
 The Pi adapter acquires the managed cwd and persisted explicit allocation IDs before its first startup sweep, then evaluates recorded permissions every 60 seconds. Acquisition and all destructive paths serialize under the same registry lock, including removal recovery and explicit owner release. Named structured operations bind before operating; creation and restoration acquire before exposing the checkout. An unavailable target is rejected. No lock is held while waiting for a conversation to end.
 Owner release events also evaluate cleanup.
-A grace period delays eligible policy cleanup.
+A grace period delays eligible policy cleanup. Background sweeps defer file and storage scans during that period. An explicit preview checks files immediately. Workfree checks them again before removal.
 New acquisition resets the grace period under the same registry lock as removal.
 A timer never grants permission or expires ownership.
 Shell-only integrations must arrange their own `wf sweep` schedule.
