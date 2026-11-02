@@ -76,6 +76,41 @@ final class RepositoryIdentityRepairTests: XCTestCase {
     XCTAssertEqual(try fixture.registry.inspect(allocation.id).phase, .retained)
   }
 
+  func testReplacementDoesNotTransferOldCleanupAuthority() throws {
+    let fixture = try Fixture()
+    var allocation = try legacyAllocation(fixture, isChangedInode: true)
+    let policy = RepositoryCleanupPolicy(
+      id: "old-repository-policy", repository: fixture.repository,
+      repositoryIdentity: allocation.repositoryIdentity, grantedAt: Date(),
+      cleanupPolicy: CleanupPolicy(graceSeconds: 60, disposablePaths: []))
+    try withConversationRegistry(fixture.registry.stateDirectory, conversation: nil) {
+      try $0.saveRepositoryCleanupPolicy(policy)
+    }
+    allocation.isCleanupAuthorized = true
+    allocation.cleanupPolicy = policy.cleanupPolicy
+    allocation.cleanupPolicySourceID = policy.id
+    try fixture.inject(allocation)
+
+    let repaired = try fixture.registry.repairRepositoryIdentity(
+      allocation.id, isRepositoryReplacementAllowed: true)
+    try verifyIdentity(repaired)
+    XCTAssertFalse(repaired.isCleanupAuthorized)
+    XCTAssertNil(repaired.cleanupPolicy)
+    XCTAssertNil(repaired.cleanupPolicySourceID)
+    try withConversationRegistry(fixture.registry.stateDirectory, conversation: nil) {
+      XCTAssertEqual(
+        try $0.repositoryCleanupPolicy(policy.repositoryIdentity, isExact: true)?.id, policy.id)
+      XCTAssertNil(try $0.repositoryCleanupPolicy(repaired.repositoryIdentity, isExact: true))
+    }
+    let new = try fixture.registry.start(
+      branch: UUID().uuidString, repository: fixture.repository, provider: .git)
+    XCTAssertNil(new.cleanupPolicy)
+    let global = try fixture.registry.enableGlobalCleanupPolicy().policy!
+    let inherited = try fixture.registry.start(
+      branch: UUID().uuidString, repository: fixture.repository, provider: .git)
+    XCTAssertEqual(inherited.cleanupPolicySourceID, global.id)
+  }
+
   func testReplacementRepairRefusesWrongMarkerAndRetriesReplacedMarker() throws {
     let fixture = try Fixture()
     let invalid = try legacyAllocation(fixture, isChangedInode: true)
@@ -139,8 +174,8 @@ final class RepositoryIdentityRepairTests: XCTestCase {
     try withConversationRegistry(fixture.registry.stateDirectory, conversation: nil) {
       try $0.saveRepositoryCleanupPolicy(policy)
     }
-    XCTAssertThrowsError(
-      try fixture.registry.repositoryCleanupPolicy(repository: fixture.repository))
+    XCTAssertNil(
+      try fixture.registry.repositoryCleanupPolicy(repository: fixture.repository).policy)
     _ = try fixture.registry.repairRepositoryIdentity(allocation.id)
     let saved = try fixture.registry.repositoryCleanupPolicy(repository: fixture.repository).policy
     XCTAssertEqual(saved?.id, policy.id)

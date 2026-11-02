@@ -134,10 +134,13 @@ public struct Registry: Sendable {
           try syncDirectory(allocation.admin!)
         }
         allocation.eligibleSince = nil
+        allocation.isCleanupAuthorized = false
+        allocation.cleanupPolicy = nil
+        allocation.cleanupPolicySourceID = nil
         recordAttempt(
           &allocation, event: "repository-replacement",
-          reasons: ["Rebound verified linked checkout to current repository identity"])
-        try store.saveRepairedIdentity(allocation, previousIdentity: previousIdentity)
+          reasons: ["Rebound verified linked checkout; old cleanup authority was not transferred"])
+        try store.saveRepairedIdentity(allocation)
         try verifyIdentity(allocation)
         return allocation
       }

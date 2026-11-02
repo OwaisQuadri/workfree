@@ -49,7 +49,7 @@ The allocation identity is not merely a path or branch name.
 A replacement checkout at the same path must not satisfy an old removal request.
 Git registration checks compare normalized paths, including aliases and paths that no longer exist.
 A missing directory with a remaining registration is not a completed removal.
-Explicit repository-replacement repair requires the same common directory, the recorded linked-worktree administration path, Git registration, and the recorded allocation marker. It replaces the marker before saving the new identity; an interruption leaves normal access blocked until the explicit repair is retried. Repair does not grant cleanup authority or prove historical repository content. Active owners still prevent offload.
+Explicit repository-replacement repair requires the same common directory, the recorded linked-worktree administration path, Git registration, and the recorded allocation marker. It replaces the marker before saving the new identity; an interruption leaves normal access blocked until the explicit repair is retried. Replacement repair clears allocation cleanup authority and leaves repository-specific policy tied to the old identity. It does not prove historical repository content. Workspace, execution, pin, and blocking conversation owners still prevent offload; task owners do not block policy offload.
 
 Legacy cleanup and policy offload call the provider's removal command without dirty-removal flags. Workfree never deletes branches automatically. It does not change the checkout's index to create the checkpoint, but it advances the branch and index to the published checkpoint before removal.
 
