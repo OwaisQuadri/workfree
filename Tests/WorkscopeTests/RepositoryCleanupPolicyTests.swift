@@ -54,8 +54,10 @@ final class RepositoryCleanupPolicyTests: XCTestCase {
     XCTAssertEqual(removed.phase, .removed, removed.reason ?? "")
     _ = try command(
       "/usr/bin/git",
-      ["-C", fixture.repository, "merge-base", "--is-ancestor", commit,
-       removed.recovery!.commit])
+      [
+        "-C", fixture.repository, "merge-base", "--is-ancestor", commit,
+        removed.recovery!.commit,
+      ])
     XCTAssertEqual(
       try git(fixture.repository, ["rev-parse", removed.recovery!.reference]),
       removed.recovery?.commit)

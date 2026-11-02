@@ -21,8 +21,10 @@ final class CleanupTests: XCTestCase {
       XCTAssertEqual(removed.phase, .removed, removed.reason ?? "")
       _ = try command(
         "/usr/bin/git",
-        ["-C", fixture.repository, "merge-base", "--is-ancestor", commit,
-         removed.recovery!.commit])
+        [
+          "-C", fixture.repository, "merge-base", "--is-ancestor", commit,
+          removed.recovery!.commit,
+        ])
       XCTAssertNotNil(removed.owners["task:" + allocation.id])
       XCTAssertFalse(FileManager.default.fileExists(atPath: allocation.path))
       _ = try fixture.registry.sweep()
@@ -333,6 +335,40 @@ final class CleanupTests: XCTestCase {
     _ = try fixture.registry.restore(allocation.id)
     XCTAssertEqual(
       try String(contentsOfFile: allocation.path + "/tracked", encoding: .utf8), "unstaged")
+  }
+
+  func testOffloadRetryFromRootCommitKeepsIncrementalHistory() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.registry.start(
+      branch: UUID().uuidString, repository: fixture.repository, provider: .git)
+    let source = try git(allocation.path, ["rev-parse", "HEAD"])
+    let tree = try git(allocation.path, ["rev-parse", "HEAD^{tree}"])
+    let staged = try git(
+      allocation.path,
+      [
+        "commit-tree", tree, "-p", source, "-m", "workfree offload staged: " + allocation.id,
+      ])
+    let first = try git(
+      allocation.path,
+      [
+        "commit-tree", tree, "-p", staged, "-m", "workfree offload: " + allocation.id,
+      ])
+    let reference = "refs/heads/workfree/offload/" + allocation.id
+    _ = try git(allocation.path, ["push", "origin", first + ":" + reference])
+    try Data("later".utf8).write(to: URL(fileURLWithPath: allocation.path + "/tracked"))
+
+    _ = try fixture.registry.authorizeCleanup(allocation.id, graceSeconds: 0)
+    _ = try fixture.registry.sweep()
+    let removed = try fixture.registry.inspect(allocation.id)
+    XCTAssertEqual(removed.phase, .removed, removed.reason ?? "")
+    XCTAssertEqual(
+      try git(fixture.repository, ["rev-parse", removed.recovery!.commit + "^^"]), first)
+    XCTAssertEqual(
+      try git(fixture.repository, ["ls-remote", "--heads", "origin", reference])
+        .split(separator: "\t").first.map(String.init), removed.recovery?.commit)
+    _ = try fixture.registry.restore(allocation.id)
+    XCTAssertEqual(
+      try String(contentsOfFile: allocation.path + "/tracked", encoding: .utf8), "later")
   }
 
   func testPolicyDoesNotOffloadUnapprovedIgnoredFiles() throws {

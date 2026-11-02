@@ -48,15 +48,12 @@ private func pushOffload(_ allocation: Allocation) throws -> (
       return (existing, source, stagedTree)
     }
   }
-  var parent = existing ?? source
-  if stagedTree != (try git(path, ["rev-parse", parent + "^{tree}"])) {
-    parent = try git(
-      path,
-      [
-        "commit-tree", stagedTree, "-p", parent, "-m",
-        "workfree offload staged: " + allocation.id,
-      ])
-  }
+  let parent = try git(
+    path,
+    [
+      "commit-tree", stagedTree, "-p", existing ?? source, "-m",
+      "workfree offload staged: " + allocation.id,
+    ])
   let commit = try git(
     path, ["commit-tree", tree, "-p", parent, "-m", "workfree offload: " + allocation.id])
   _ = try git(path, ["push", "origin", commit + ":" + reference])
