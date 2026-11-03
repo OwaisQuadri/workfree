@@ -54,10 +54,21 @@ func transcriptMentions(
     )
   else { throw WorkscopeError("Cannot inspect conversation transcripts") }
   var latest: [String: Date] = [:]
+  let identifiers = allocations.map { Data($0.id.utf8) }
+  let unicodeEscape = Data("\\u".utf8)
   let formatter = ISO8601DateFormatter()
   formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
   func readLine(_ data: Data) throws {
-    guard let entry = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+    let hasIdentifier = identifiers.contains { data.range(of: $0) != nil }
+    guard hasIdentifier || data.range(of: unicodeEscape) != nil else { return }
+    let parsed: Any
+    do {
+      parsed = try JSONSerialization.jsonObject(with: data)
+    } catch {
+      if hasIdentifier { throw error }
+      return
+    }
+    guard let entry = parsed as? [String: Any],
       entry["type"] as? String == "message",
       let message = entry["message"] as? [String: Any],
       let role = message["role"] as? String, role == "user" || role == "assistant",

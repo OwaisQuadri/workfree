@@ -146,6 +146,57 @@ final class OneOffTests: XCTestCase {
     XCTAssertTrue(FileManager.default.fileExists(atPath: allocation.path))
   }
 
+  func testMalformedUnrelatedTranscriptDoesNotBlockButPossibleMentionDoes() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.registry.start(
+      branch: UUID().uuidString, repository: fixture.repository, provider: .git)
+    let old = Date().addingTimeInterval(-7 * 24 * 3600)
+    for path in ["", "tracked", ".gitignore"] {
+      try FileManager.default.setAttributes(
+        [.modificationDate: old], ofItemAtPath: allocation.path + "/" + path)
+    }
+    let transcript = fixture.root + "/malformed.jsonl"
+    let invalid =
+      "{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"\\udc00\"}]}}\n"
+    try Data(invalid.utf8).write(to: URL(fileURLWithPath: transcript))
+    let preview = try XCTUnwrap(
+      fixture.registry.oneOffPreview(
+        id: allocation.id, minimumIdle: 24 * 3600, transcriptDirectory: fixture.root
+      ).first)
+    XCTAssertTrue(preview.isEligible, preview.reasons.description)
+
+    let possibleMention = invalid.replacingOccurrences(
+      of: "\\udc00", with: allocation.id + "\\udc00")
+    try Data(possibleMention.utf8).write(to: URL(fileURLWithPath: transcript))
+    XCTAssertThrowsError(
+      try fixture.registry.oneOffPreview(
+        id: allocation.id, minimumIdle: 24 * 3600, transcriptDirectory: fixture.root))
+    XCTAssertTrue(FileManager.default.fileExists(atPath: allocation.path))
+  }
+
+  func testUnicodeEscapedIdentifierStillCountsAsAConversationMention() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.registry.start(
+      branch: UUID().uuidString, repository: fixture.repository, provider: .git)
+    let old = Date().addingTimeInterval(-7 * 24 * 3600)
+    for path in ["", "tracked", ".gitignore"] {
+      try FileManager.default.setAttributes(
+        [.modificationDate: old], ofItemAtPath: allocation.path + "/" + path)
+    }
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let escaped = allocation.id.utf8.map { String(format: "\\u%04x", Int($0)) }.joined()
+    let line =
+      "{\"type\":\"message\",\"timestamp\":\"\(formatter.string(from: Date()))\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"\(escaped)\"}]}}\n"
+    try Data(line.utf8).write(to: URL(fileURLWithPath: fixture.root + "/encoded.jsonl"))
+    let preview = try XCTUnwrap(
+      fixture.registry.oneOffPreview(
+        id: allocation.id, minimumIdle: 24 * 3600, transcriptDirectory: fixture.root
+      ).first)
+    XCTAssertFalse(preview.isEligible)
+    XCTAssertTrue(preview.reasons.contains { $0.contains("Minimum idle age") })
+  }
+
   func testUnreadableTranscriptSubtreeBlocksAgeBasedOffload() throws {
     let fixture = try Fixture()
     let allocation = try fixture.registry.start(
