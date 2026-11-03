@@ -54,6 +54,7 @@ public struct Allocation: Codable, Sendable {
   public internal(set) var isStandingCleanupDeclined: Bool?
   public internal(set) var eligibleSince: Date?
   public internal(set) var recovery: RecoveryRecord?
+  public internal(set) var offloadCleanup: OffloadCleanup?
   public internal(set) var cleanupAttempts: [CleanupAttempt]?
   public internal(set) var pastRemovals: [Reclamation]?
   public internal(set) var conversationClaims: [ConversationClaim]?
@@ -86,6 +87,12 @@ public struct RepositoryCleanupPolicyStatus: Codable, Sendable {
 public struct GlobalCleanupPolicyStatus: Codable, Sendable {
   public let policy: RepositoryCleanupPolicy?
   public let excludedRepositories: [String]
+}
+
+public struct OffloadCleanup: Codable, Sendable {
+  public let minimumIdle: TimeInterval
+  public let transcriptDirectory: String
+  public var nextCheckAt: Date?
 }
 
 public struct RecoveryRecord: Codable, Sendable {
