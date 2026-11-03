@@ -136,10 +136,14 @@ func transcriptMentions(
   var latest: [String: Date] = [:]
   let mentionStrings = allocations.flatMap { [$0.id, $0.path] }
   let mentionBytes = mentionStrings.map { Data($0.utf8) }
+  let asciiWithNonASCIIEquivalent = Data(";K`".utf8)
   let uncertainPathPrefixes = allocations.compactMap { allocation -> Data? in
     let bytes = Array(allocation.path.utf8)
-    guard bytes.contains(where: { $0 >= 128 || $0 == 10 }) else { return nil }
-    return Data(bytes.prefix { $0 < 128 && $0 != 10 })
+    let isUncertain = { (byte: UInt8) in
+      byte >= 128 || byte == 10 || asciiWithNonASCIIEquivalent.contains(byte)
+    }
+    guard bytes.contains(where: isUncertain) else { return nil }
+    return Data(bytes.prefix { !isUncertain($0) })
   }
   let longestMention = mentionStrings.map(\.count).max() ?? 0
   let backslash = Data([92])

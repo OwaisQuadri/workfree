@@ -251,6 +251,24 @@ final class OneOffTests: XCTestCase {
     XCTAssertNotNil(try transcriptMentions([allocation], directory: fixture.root)[allocation.id])
   }
 
+  func testASCIIPathWithUnicodeEquivalentMentionBlocksOffload() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.registry.start(
+      branch: UUID().uuidString, repository: fixture.repository,
+      path: fixture.root + "/Key-checkout", provider: .git)
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let mention = allocation.path.replacingOccurrences(of: "/Key-", with: "/Key-")
+    let record: [String: Any] = [
+      "type": "message", "timestamp": formatter.string(from: Date()),
+      "message": ["role": "assistant", "content": [["type": "text", "text": mention]]],
+    ]
+    let encoded = try JSONSerialization.data(withJSONObject: record)
+    XCTAssertNil(encoded.range(of: Data(allocation.path.utf8)))
+    try (encoded + Data([10])).write(to: URL(fileURLWithPath: fixture.root + "/kelvin.jsonl"))
+    XCTAssertNotNil(try transcriptMentions([allocation], directory: fixture.root)[allocation.id])
+  }
+
   func testPathMentionAcrossTextPartsBlocksOffload() throws {
     let fixture = try Fixture()
     let allocation = try fixture.registry.start(
