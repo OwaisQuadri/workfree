@@ -171,6 +171,14 @@ final class OneOffTests: XCTestCase {
     XCTAssertThrowsError(
       try fixture.registry.oneOffPreview(
         id: allocation.id, minimumIdle: 24 * 3600, transcriptDirectory: fixture.root))
+    let first = try XCTUnwrap(allocation.id.utf8.first)
+    let partlyEscaped = String(format: "\\u%04x", Int(first)) + allocation.id.dropFirst()
+    let escapedMention = invalid.replacingOccurrences(
+      of: "\\udc00", with: partlyEscaped + "\\udc00")
+    try Data(escapedMention.utf8).write(to: URL(fileURLWithPath: transcript))
+    XCTAssertThrowsError(
+      try fixture.registry.oneOffPreview(
+        id: allocation.id, minimumIdle: 24 * 3600, transcriptDirectory: fixture.root))
     XCTAssertTrue(FileManager.default.fileExists(atPath: allocation.path))
   }
 
@@ -195,6 +203,32 @@ final class OneOffTests: XCTestCase {
       ).first)
     XCTAssertFalse(preview.isEligible)
     XCTAssertTrue(preview.reasons.contains { $0.contains("Minimum idle age") })
+  }
+
+  func testExplicitPathMentionBlocksOffloadWithRawOrEscapedSlashes() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.registry.start(
+      branch: UUID().uuidString, repository: fixture.repository,
+      path: fixture.root + "/custom-checkout", provider: .git)
+    let old = Date().addingTimeInterval(-7 * 24 * 3600)
+    for path in ["", "tracked", ".gitignore"] {
+      try FileManager.default.setAttributes(
+        [.modificationDate: old], ofItemAtPath: allocation.path + "/" + path)
+    }
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let transcript = fixture.root + "/path-mention.jsonl"
+    for path in [allocation.path, allocation.path.replacingOccurrences(of: "/", with: "\\/")] {
+      let line =
+        "{\"type\":\"message\",\"timestamp\":\"\(formatter.string(from: Date()))\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"\(path)\"}]}}\n"
+      try Data(line.utf8).write(to: URL(fileURLWithPath: transcript))
+      let preview = try XCTUnwrap(
+        fixture.registry.oneOffPreview(
+          id: allocation.id, minimumIdle: 24 * 3600, transcriptDirectory: fixture.root
+        ).first)
+      XCTAssertNotNil(preview.lastMention)
+      XCTAssertFalse(preview.isEligible)
+    }
   }
 
   func testUnreadableTranscriptSubtreeBlocksAgeBasedOffload() throws {

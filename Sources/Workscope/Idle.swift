@@ -39,9 +39,37 @@ func lastFileActivity(_ path: String) throws -> Date {
   return latest
 }
 
+func asciiUnescapedJSON(_ data: Data) -> Data {
+  let bytes = Array(data)
+  var result = Data()
+  result.reserveCapacity(bytes.count)
+  var index = 0
+  while index < bytes.count {
+    if bytes[index] == 92, index + 1 < bytes.count {
+      if bytes[index + 1] == 47 {
+        result.append(47)
+        index += 2
+        continue
+      }
+      if bytes[index + 1] == 117, index + 5 < bytes.count,
+        let value = UInt8(
+          String(decoding: bytes[(index + 2)...(index + 5)], as: UTF8.self), radix: 16)
+      {
+        result.append(value)
+        index += 6
+        continue
+      }
+    }
+    result.append(bytes[index])
+    index += 1
+  }
+  return result
+}
+
 func transcriptMentions(
   _ allocations: [Allocation], directory: String
 ) throws -> [String: Date] {
+  guard !allocations.isEmpty else { return [:] }
   let root = URL(fileURLWithPath: directory)
   var enumerationError: Error?
   guard
@@ -54,18 +82,28 @@ func transcriptMentions(
     )
   else { throw WorkscopeError("Cannot inspect conversation transcripts") }
   var latest: [String: Date] = [:]
-  let identifiers = allocations.map { Data($0.id.utf8) }
+  let mentionStrings = allocations.flatMap { [$0.id, $0.path] }
+  let mentionBytes = mentionStrings.map { Data($0.utf8) }
+  let rawPattern = try NSRegularExpression(
+    pattern: mentionStrings.map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|"))
   let unicodeEscape = Data("\\u".utf8)
+  let slashEscape = Data("\\/".utf8)
   let formatter = ISO8601DateFormatter()
   formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
   func readLine(_ data: Data) throws {
-    let hasIdentifier = identifiers.contains { data.range(of: $0) != nil }
-    guard hasIdentifier || data.range(of: unicodeEscape) != nil else { return }
+    let line = String(decoding: data, as: UTF8.self)
+    let hasRawMention =
+      rawPattern.firstMatch(
+        in: line, range: NSRange(line.startIndex..<line.endIndex, in: line)) != nil
+    let hasEscape = data.range(of: unicodeEscape) != nil || data.range(of: slashEscape) != nil
+    guard hasRawMention || hasEscape else { return }
     let parsed: Any
     do {
       parsed = try JSONSerialization.jsonObject(with: data)
     } catch {
-      if hasIdentifier { throw error }
+      if hasRawMention { throw error }
+      let unescaped = asciiUnescapedJSON(data)
+      if mentionBytes.contains(where: { unescaped.range(of: $0) != nil }) { throw error }
       return
     }
     guard let entry = parsed as? [String: Any],
@@ -96,6 +134,9 @@ func transcriptMentions(
     var pending = Data()
     while let chunk = try handle.read(upToCount: 65_536), !chunk.isEmpty {
       pending.append(chunk)
+      guard pending.count <= 64 * 1_024 * 1_024 else {
+        throw WorkscopeError("Conversation record exceeds 64 MiB")
+      }
       while let newline = pending.firstIndex(of: 10) {
         try readLine(pending.prefix(upTo: newline))
         pending.removeSubrange(...newline)
