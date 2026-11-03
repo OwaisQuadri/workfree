@@ -31,6 +31,10 @@ let help = """
     revoke-cleanup ID
     preview
     sweep
+    offload-preview ID|--repo PATH --min-idle 0h|24h|2w [--sessions-dir PATH]
+    offload ID|--repo PATH --min-idle 0h|24h|2w --checkpoint local|remote
+      [--sessions-dir PATH]
+    cleanup-now ID|--repo PATH --min-idle 0h|24h|2w [--sessions-dir PATH]
     restore ID
     run ID [--owner TOKEN] -- COMMAND...
     --help
@@ -92,6 +96,7 @@ struct Arguments {
         case "--version": isVersion = true
         case "--state-dir", "--repo", "--base", "--path", "--owner", "--kind", "--label",
           "--status", "--provider", "--since", "--grace-seconds", "--disposable-path",
+          "--min-idle", "--checkpoint", "--sessions-dir",
           "--session-id", "--session-pid", "--session-cwd", "--session-allocations", "--allocation":
           index += 1
           guard index < arguments.count,
@@ -139,6 +144,10 @@ struct Arguments {
     case "entry-exit": allowed = ["--owner", "--status"]
     case "run": allowed = ["--owner", "--"]
     case "repair-identity": allowed = ["--accept-replaced-repository"]
+    case "offload-preview", "cleanup-now":
+      allowed = ["--repo", "--min-idle", "--sessions-dir"]
+    case "offload":
+      allowed = ["--repo", "--min-idle", "--sessions-dir", "--checkpoint"]
     case "inspect", "list", "keep", "unkeep", "recover", "revoke-cleanup", "restore", "preview",
       "sweep":
       allowed = []
@@ -157,14 +166,22 @@ struct Arguments {
     else {
       throw WorkscopeError("Option not valid for \(action)")
     }
+    let isOneOff = ["offload-preview", "offload", "cleanup-now"].contains(action)
     let isCountValid =
-      action == "claim"
+      action == "claim" || isOneOff
       ? (1...2).contains(positional.count)
       : action == "measure"
         ? positional.count >= 2
         : positional.count == (["list", "status", "preview", "sweep"].contains(action) ? 1 : 2)
     guard isCountValid else {
       throw WorkscopeError("Wrong number of arguments for \(action)")
+    }
+    if isOneOff {
+      guard (positional.count == 2) != (options["--repo"] != nil) else {
+        throw WorkscopeError("Choose exactly one of allocation ID or --repo PATH")
+      }
+      _ = try value("--min-idle")
+      if action == "offload" { _ = try value("--checkpoint") }
     }
     if action == "run", !flags.contains("--") || command.isEmpty {
       throw WorkscopeError("run requires -- COMMAND...")
@@ -273,6 +290,46 @@ do {
       try output(policyStatus, isJSON: arguments.isJSON)
     } else if action == "claim" {
       try output(registry.claim(arguments.positional.dropFirst().first), isJSON: arguments.isJSON)
+    } else if ["offload-preview", "offload", "cleanup-now"].contains(action) {
+      let ageText = try arguments.value("--min-idle")
+      let minimumIdle: TimeInterval
+      if ageText == "0h" {
+        minimumIdle = 0
+      } else {
+        guard let parsed = try parseInterval(ageText) else {
+          throw WorkscopeError("Minimum idle age cannot be 'all'")
+        }
+        minimumIdle = parsed
+      }
+      let sessionDirectory =
+        arguments.options["--sessions-dir"]
+        ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
+          ".pi/agent/sessions"
+        ).path
+      let id = arguments.positional.dropFirst().first
+      let source = arguments.options["--repo"]
+      switch action {
+      case "offload-preview":
+        try output(
+          registry.oneOffPreview(
+            id: id, repository: source, minimumIdle: minimumIdle,
+            transcriptDirectory: sessionDirectory), isJSON: arguments.isJSON)
+      case "offload":
+        let checkpoint = try arguments.value("--checkpoint")
+        guard checkpoint == "local" || checkpoint == "remote" else {
+          throw WorkscopeError("Choose local or remote checkpoint")
+        }
+        try output(
+          registry.offload(
+            id: id, repository: source, minimumIdle: minimumIdle,
+            transcriptDirectory: sessionDirectory, isRemote: checkpoint == "remote"),
+          isJSON: arguments.isJSON)
+      default:
+        try output(
+          registry.oneOffCleanup(
+            id: id, repository: source, minimumIdle: minimumIdle,
+            transcriptDirectory: sessionDirectory), isJSON: arguments.isJSON)
+      }
     } else if action == "preview" {
       try output(CleanupPlan(registry.preview()), isJSON: arguments.isJSON)
     } else if action == "sweep" {

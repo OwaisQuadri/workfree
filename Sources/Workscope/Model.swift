@@ -94,6 +94,7 @@ public struct RecoveryRecord: Codable, Sendable {
   public let branch: String?
   public let preservedAt: Date
   public let event: String
+  public let lastFileActivity: Date?
 }
 
 public struct CleanupAttempt: Codable, Sendable {
