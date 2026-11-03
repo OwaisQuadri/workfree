@@ -265,6 +265,7 @@ final class OneOffTests: XCTestCase {
       [offloaded], minimumIdle: 3_600, transcriptDirectory: fixture.root,
       isCheckpointRequired: true)[0]
     XCTAssertTrue(selected.isEligible, selected.reasons.joined(separator: "; "))
+    _ = try fixture.registry.authorizeCleanup(allocation.id, graceSeconds: 0)
     try FileManager.default.setAttributes(
       [.modificationDate: Date()], ofItemAtPath: allocation.path + "/tracked")
     try withRegistry(fixture.registry.stateDirectory) { store in
@@ -275,6 +276,10 @@ final class OneOffTests: XCTestCase {
       XCTAssertEqual(current.phase, .blocked)
       XCTAssertTrue(current.reason?.contains("Minimum idle age has not elapsed") == true)
     }
+    let failed = try fixture.registry.inspect(allocation.id)
+    XCTAssertEqual(failed.recovery?.event, "manual-cleanup")
+    XCTAssertTrue(ownershipReasons(failed).contains("Awaiting manual cleanup"))
+    _ = try fixture.registry.sweep()
     XCTAssertTrue(FileManager.default.fileExists(atPath: allocation.path))
     XCTAssertEqual(try git(allocation.path, ["status", "--porcelain"]), "")
   }
@@ -344,13 +349,18 @@ final class OneOffTests: XCTestCase {
     XCTAssertEqual(try git(allocation.path, ["status", "--porcelain"]), "")
   }
 
-  func testInterruptedManualCleanupCanReconcileWithoutStandingPolicy() throws {
+  func testInterruptedManualCleanupRetainsCheckoutUntilExplicitRetry() throws {
     let fixture = try Fixture()
     let allocation = try fixture.registry.start(
       branch: UUID().uuidString, repository: fixture.repository, provider: .git)
+    let old = Date().addingTimeInterval(-7_200)
+    for path in ["", "tracked", ".gitignore"] {
+      try FileManager.default.setAttributes(
+        [.modificationDate: old], ofItemAtPath: allocation.path + "/" + path)
+    }
     var pending = try XCTUnwrap(
       fixture.registry.offload(
-        id: allocation.id, minimumIdle: 0, transcriptDirectory: fixture.root, isRemote: false
+        id: allocation.id, minimumIdle: 3_600, transcriptDirectory: fixture.root, isRemote: false
       ).first)
     let recovery = try XCTUnwrap(pending.recovery)
     pending.recovery = RecoveryRecord(
@@ -360,8 +370,25 @@ final class OneOffTests: XCTestCase {
     pending.phase = .removing
     pending.isRemovalPending = true
     try withRegistry(fixture.registry.stateDirectory) { store in try store.save(pending) }
+    try FileManager.default.setAttributes(
+      [.modificationDate: Date()], ofItemAtPath: allocation.path + "/tracked")
     _ = try fixture.registry.sweep()
-    XCTAssertEqual(try fixture.registry.inspect(allocation.id).phase, .removed)
+    let retained = try fixture.registry.inspect(allocation.id)
+    XCTAssertEqual(retained.phase, .retained)
+    XCTAssertFalse(retained.isRemovalPending)
+    XCTAssertEqual(retained.recovery?.event, "manual-cleanup")
+    XCTAssertTrue(FileManager.default.fileExists(atPath: allocation.path))
+    XCTAssertTrue(
+      try fixture.registry.oneOffCleanup(
+        id: allocation.id, minimumIdle: 3_600, transcriptDirectory: fixture.root
+      ).isEmpty)
+    try FileManager.default.setAttributes(
+      [.modificationDate: old], ofItemAtPath: allocation.path + "/tracked")
+    let explicit = try XCTUnwrap(
+      fixture.registry.oneOffCleanup(
+        id: allocation.id, minimumIdle: 3_600, transcriptDirectory: fixture.root
+      ).first)
+    XCTAssertEqual(explicit.phase, .removed, explicit.reason ?? "")
     XCTAssertFalse(FileManager.default.fileExists(atPath: allocation.path))
   }
 

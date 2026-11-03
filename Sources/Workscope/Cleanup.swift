@@ -131,7 +131,7 @@ func ownershipReasons(_ allocation: Allocation, isManual: Bool = false) -> [Stri
   if !isManual && !allocation.isCleanupAuthorized && allocation.cleanupPolicy == nil {
     reasons.append("Cleanup is not authorized")
   }
-  if !isManual && allocation.recovery?.event.hasPrefix("manual-offload-") == true {
+  if !isManual && allocation.recovery?.event.hasPrefix("manual-") == true {
     reasons.append("Awaiting manual cleanup")
   }
   for (token, owner) in allocation.owners.sorted(by: { $0.key < $1.key }) {
@@ -452,8 +452,14 @@ func reconcileRemoval(_ allocation: inout Allocation, store: RegistryStore) thro
       try verifyIdentity(allocation)
       allocation.isRemovalPending = false
       allocation.phase = .retained
+      if isManual {
+        allocation.reason = "Manual cleanup interrupted; run cleanup-now after checking idle age"
+        recordAttempt(&allocation, event: "recovery", reasons: [allocation.reason!])
+        try store.save(allocation)
+        return
+      }
       try store.save(allocation)
-      try cleanup(&allocation, store: store, event: isManual ? "manual-cleanup" : "recovery")
+      try cleanup(&allocation, store: store, event: "recovery")
       return
     }
     try completeRemoval(&allocation)
