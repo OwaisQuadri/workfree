@@ -605,6 +605,44 @@ final class OneOffTests: XCTestCase {
     XCTAssertTrue(FileManager.default.fileExists(atPath: allocation.path))
   }
 
+  func testUnreadableCheckpointTranscriptsDoNotStopOtherSweepCandidates() throws {
+    let fixture = try Fixture()
+    for _ in 0..<2 {
+      let allocation = try fixture.registry.start(
+        branch: UUID().uuidString, repository: fixture.repository, provider: .git)
+      _ = try fixture.registry.offload(
+        id: allocation.id, minimumIdle: 0, transcriptDirectory: fixture.root, isRemote: false)
+      _ = try fixture.registry.restore(allocation.id)
+    }
+    let allocations = try withRegistry(fixture.registry.stateDirectory) { store in
+      try store.allocations()
+    }
+    XCTAssertEqual(allocations.count, 2)
+    try withRegistry(fixture.registry.stateDirectory) { store in
+      for (index, saved) in allocations.enumerated() {
+        var allocation = saved
+        let recovery = try XCTUnwrap(allocation.recovery)
+        allocation.recovery = RecoveryRecord(
+          commit: recovery.commit, reference: recovery.reference, branch: recovery.branch,
+          preservedAt: recovery.preservedAt, event: "manual-offload-local",
+          lastFileActivity: recovery.lastFileActivity)
+        allocation.offloadCleanup = OffloadCleanup(
+          minimumIdle: index == 0 ? 3_600 : 0,
+          transcriptDirectory: index == 0 ? fixture.root + "/missing-sessions" : fixture.root,
+          nextCheckAt: nil)
+        try store.save(allocation)
+      }
+    }
+    _ = try fixture.registry.sweep()
+    let blocked = try fixture.registry.inspect(allocations[0].id)
+    XCTAssertEqual(blocked.phase, .retained)
+    XCTAssertTrue(blocked.reason?.contains("Cannot inspect conversation transcripts") == true)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: allocations[0].path))
+    let removed = try fixture.registry.inspect(allocations[1].id)
+    XCTAssertEqual(removed.phase, .removed, removed.reason ?? "")
+    XCTAssertFalse(FileManager.default.fileExists(atPath: allocations[1].path))
+  }
+
   func testInvalidCleanupAgeDoesNotEnrollAnExistingCheckpoint() throws {
     let fixture = try Fixture()
     let allocation = try fixture.registry.start(

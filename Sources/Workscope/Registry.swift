@@ -385,10 +385,19 @@ public struct Registry: Sendable {
             try store.save(allocation)
           } else if policy.nextCheckAt == nil || policy.nextCheckAt! <= Date() {
             let scanStarted = Date().addingTimeInterval(-1)
-            let preview = try oneOffPreviews(
-              [allocation], minimumIdle: policy.minimumIdle,
-              transcriptDirectory: policy.transcriptDirectory,
-              isCheckpointRequired: true)[0]
+            let preview: OneOffPreview
+            do {
+              preview = try oneOffPreviews(
+                [allocation], minimumIdle: policy.minimumIdle,
+                transcriptDirectory: policy.transcriptDirectory,
+                isCheckpointRequired: true)[0]
+            } catch {
+              allocation.phase = .retained
+              allocation.reason = String(describing: error)
+              try store.save(allocation)
+              results.append(allocation)
+              continue
+            }
             if preview.isEligible {
               try cleanup(
                 &allocation, store: store, event: "manual-cleanup",
