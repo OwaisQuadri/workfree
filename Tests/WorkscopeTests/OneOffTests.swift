@@ -543,6 +543,25 @@ final class OneOffTests: XCTestCase {
     XCTAssertFalse(FileManager.default.fileExists(atPath: allocation.path))
   }
 
+  func testFinishingTaskDoesNotBypassEnrolledIdleAge() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.registry.start(
+      branch: UUID().uuidString, repository: fixture.repository, provider: .git)
+    _ = try fixture.registry.offload(
+      id: allocation.id, minimumIdle: 0, transcriptDirectory: fixture.root, isRemote: false)
+    _ = try fixture.registry.restore(allocation.id)
+    try withRegistry(fixture.registry.stateDirectory) { store in
+      var pending = try store.allocation(allocation.id)
+      pending.offloadCleanup = OffloadCleanup(
+        minimumIdle: 3_600, transcriptDirectory: fixture.root, nextCheckAt: nil)
+      try store.save(pending)
+    }
+    let finished = try fixture.registry.finish(allocation.id)
+    XCTAssertNotEqual(finished.phase, .removed)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: allocation.path))
+    XCTAssertNotNil(finished.offloadCleanup)
+  }
+
   func testRemoteOffloadRechecksMentionsWrittenDuringPush() throws {
     let fixture = try Fixture()
     let allocation = try fixture.registry.start(

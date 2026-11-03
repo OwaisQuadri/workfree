@@ -128,6 +128,9 @@ func recordAttempt(_ allocation: inout Allocation, event: String, reasons: [Stri
 
 func ownershipReasons(_ allocation: Allocation, isManual: Bool = false) -> [String] {
   var reasons = conversationReasons(allocation)
+  if !isManual && allocation.offloadCleanup != nil {
+    reasons.append("Offloaded checkpoint requires idle-checked cleanup")
+  }
   if !isManual && !allocation.isCleanupAuthorized && allocation.cleanupPolicy == nil
     && allocation.offloadCleanup == nil
   {
