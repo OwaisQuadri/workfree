@@ -248,9 +248,6 @@ func cleanupPreview(
   _ allocation: Allocation, isFileVerificationRequired: Bool = true, isManual: Bool = false
 ) -> CleanupPreview {
   var reasons = ownershipReasons(allocation, isManual: isManual)
-  if let nextCheckAt = allocation.offloadCleanup?.nextCheckAt, nextCheckAt > Date() {
-    reasons.append("Minimum idle age has not elapsed")
-  }
   if allocation.phase == .creating || allocation.phase == .failed {
     reasons.append("Allocation identity requires recovery")
   }

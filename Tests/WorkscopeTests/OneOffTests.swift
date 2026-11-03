@@ -514,6 +514,35 @@ final class OneOffTests: XCTestCase {
     XCTAssertFalse(FileManager.default.fileExists(atPath: allocation.path))
   }
 
+  func testExplicitZeroHourCleanupIgnoresStoredSweepDeadline() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.registry.start(
+      branch: UUID().uuidString, repository: fixture.repository, provider: .git)
+    _ = try fixture.registry.offload(
+      id: allocation.id, minimumIdle: 0, transcriptDirectory: fixture.root, isRemote: false)
+    _ = try fixture.registry.restore(allocation.id)
+    try withRegistry(fixture.registry.stateDirectory) { store in
+      var pending = try store.allocation(allocation.id)
+      let recovery = try XCTUnwrap(pending.recovery)
+      pending.recovery = RecoveryRecord(
+        commit: recovery.commit, reference: recovery.reference, branch: recovery.branch,
+        preservedAt: recovery.preservedAt, event: "manual-offload-local",
+        lastFileActivity: Date().addingTimeInterval(-7_200))
+      pending.offloadCleanup = OffloadCleanup(
+        minimumIdle: 3_600, transcriptDirectory: fixture.root, nextCheckAt: nil)
+      try store.save(pending)
+    }
+    _ = try fixture.registry.sweep()
+    let waiting = try fixture.registry.inspect(allocation.id)
+    XCTAssertTrue((waiting.offloadCleanup?.nextCheckAt ?? .distantPast) > Date())
+    let result = try XCTUnwrap(
+      fixture.registry.oneOffCleanup(
+        id: allocation.id, minimumIdle: 0, transcriptDirectory: fixture.root
+      ).first)
+    XCTAssertEqual(result.phase, .removed, result.reason ?? "")
+    XCTAssertFalse(FileManager.default.fileExists(atPath: allocation.path))
+  }
+
   func testRemoteOffloadRechecksMentionsWrittenDuringPush() throws {
     let fixture = try Fixture()
     let allocation = try fixture.registry.start(
