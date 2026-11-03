@@ -39,7 +39,7 @@ func lastFileActivity(_ path: String) throws -> Date {
   return latest
 }
 
-private func transcriptMentions(
+func transcriptMentions(
   _ allocations: [Allocation], directory: String
 ) throws -> [String: Date] {
   let root = URL(fileURLWithPath: directory)

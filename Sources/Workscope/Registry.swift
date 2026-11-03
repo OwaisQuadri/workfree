@@ -281,9 +281,12 @@ public struct Registry: Sendable {
             allocation.repository,
             ["-c", "core.fsync=reference", "update-ref", reference, offload.commit, ""])
           let activity = try lastFileActivity(allocation.path)
+          let mentions =
+            try minimumIdle > 0
+            ? transcriptMentions([allocation], directory: transcriptDirectory) : [:]
           try require(
-            max(activity, preview.lastMention ?? .distantPast).addingTimeInterval(minimumIdle)
-              <= Date(),
+            max(activity, mentions[allocation.id] ?? .distantPast)
+              .addingTimeInterval(minimumIdle) <= Date(),
             "Checkout changed within the minimum idle age")
           allocation.recovery = RecoveryRecord(
             commit: offload.commit, reference: reference,
@@ -328,7 +331,9 @@ public struct Registry: Sendable {
       var results: [Allocation] = []
       for preview in candidates where preview.isEligible {
         var allocation = try store.allocation(preview.id)
-        try cleanup(&allocation, store: store, event: "manual-cleanup")
+        try cleanup(
+          &allocation, store: store, event: "manual-cleanup", minimumIdle: minimumIdle,
+          transcriptDirectory: transcriptDirectory)
         results.append(allocation)
       }
       return results

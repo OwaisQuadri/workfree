@@ -278,9 +278,10 @@ func cleanupPreview(
     estimatedBytes: estimatedBytes)
 }
 
-func cleanup(_ allocation: inout Allocation, store: RegistryStore, event: String = "owner-release")
-  throws
-{
+func cleanup(
+  _ allocation: inout Allocation, store: RegistryStore, event: String = "owner-release",
+  minimumIdle: TimeInterval? = nil, transcriptDirectory: String? = nil
+) throws {
   if allocation.phase == .removed { return }
   if allocation.isRemovalPending {
     try reconcileRemoval(&allocation, store: store)
@@ -362,6 +363,15 @@ func cleanup(_ allocation: inout Allocation, store: RegistryStore, event: String
     } else {
       try require(
         try git(allocation.path, ["rev-parse", "HEAD"]) == head, "HEAD changed during cleanup")
+    }
+    if isManual {
+      guard let minimumIdle, let transcriptDirectory else {
+        throw WorkscopeError("Manual cleanup requires an idle age and transcript directory")
+      }
+      let current = try oneOffPreviews(
+        [allocation], minimumIdle: minimumIdle, transcriptDirectory: transcriptDirectory,
+        isCheckpointRequired: true)[0]
+      try require(current.isEligible, current.reasons.joined(separator: "; "))
     }
     allocation.phase = .removing
     allocation.isRemovalPending = true

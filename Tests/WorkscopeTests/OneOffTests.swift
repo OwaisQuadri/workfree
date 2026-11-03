@@ -246,6 +246,81 @@ final class OneOffTests: XCTestCase {
     XCTAssertEqual(cleaned.phase, .removed, cleaned.reason ?? "")
   }
 
+  func testCleanupRechecksAContentPreservingTouchBeforeRemoval() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.registry.start(
+      branch: UUID().uuidString, repository: fixture.repository, provider: .git)
+    let old = Date().addingTimeInterval(-7_200)
+    for path in ["", "tracked", ".gitignore"] {
+      try FileManager.default.setAttributes(
+        [.modificationDate: old], ofItemAtPath: allocation.path + "/" + path)
+    }
+    let offloaded = try XCTUnwrap(
+      fixture.registry.offload(
+        id: allocation.id, minimumIdle: 3_600, transcriptDirectory: fixture.root,
+        isRemote: false
+      ).first)
+    XCTAssertEqual(offloaded.phase, .retained, offloaded.reason ?? "")
+    let selected = try oneOffPreviews(
+      [offloaded], minimumIdle: 3_600, transcriptDirectory: fixture.root,
+      isCheckpointRequired: true)[0]
+    XCTAssertTrue(selected.isEligible, selected.reasons.joined(separator: "; "))
+    try FileManager.default.setAttributes(
+      [.modificationDate: Date()], ofItemAtPath: allocation.path + "/tracked")
+    try withRegistry(fixture.registry.stateDirectory) { store in
+      var current = try store.allocation(allocation.id)
+      try cleanup(
+        &current, store: store, event: "manual-cleanup", minimumIdle: 3_600,
+        transcriptDirectory: fixture.root)
+      XCTAssertEqual(current.phase, .blocked)
+      XCTAssertTrue(current.reason?.contains("Minimum idle age has not elapsed") == true)
+    }
+    XCTAssertTrue(FileManager.default.fileExists(atPath: allocation.path))
+    XCTAssertEqual(try git(allocation.path, ["status", "--porcelain"]), "")
+  }
+
+  func testRemoteOffloadRechecksMentionsWrittenDuringPush() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.registry.start(
+      branch: UUID().uuidString, repository: fixture.repository, provider: .git)
+    let old = Date().addingTimeInterval(-7_200)
+    for path in ["", "tracked", ".gitignore"] {
+      try FileManager.default.setAttributes(
+        [.modificationDate: old], ofItemAtPath: allocation.path + "/" + path)
+    }
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let entry: [String: Any] = [
+      "type": "message", "timestamp": formatter.string(from: Date()),
+      "message": [
+        "role": "assistant", "content": [["type": "text", "text": allocation.id]],
+      ],
+    ]
+    let json = String(decoding: try JSONSerialization.data(withJSONObject: entry), as: UTF8.self)
+    let transcript = fixture.root + "/during-push.jsonl"
+    let hook = URL(
+      fileURLWithPath: try git(fixture.repository, ["rev-parse", "--git-path", "hooks/pre-push"]),
+      relativeTo: URL(fileURLWithPath: fixture.repository + "/")
+    ).standardizedFileURL.path
+    try Data(("#!/bin/zsh\nprintf '%s\\n' '" + json + "' > '" + transcript + "'\n").utf8)
+      .write(to: URL(fileURLWithPath: hook))
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: hook)
+    let selected = try XCTUnwrap(
+      fixture.registry.oneOffPreview(
+        id: allocation.id, minimumIdle: 3_600, transcriptDirectory: fixture.root
+      ).first)
+    XCTAssertTrue(selected.isEligible, selected.reasons.joined(separator: "; "))
+    let result = try XCTUnwrap(
+      fixture.registry.offload(
+        id: allocation.id, minimumIdle: 3_600, transcriptDirectory: fixture.root,
+        isRemote: true
+      ).first)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: transcript))
+    XCTAssertEqual(result.phase, .blocked)
+    XCTAssertTrue(result.reason?.contains("minimum idle age") == true)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: allocation.path))
+  }
+
   func testChangedCheckoutRequiresAnotherOffloadBeforeCleanup() throws {
     let fixture = try Fixture()
     let allocation = try fixture.registry.start(
