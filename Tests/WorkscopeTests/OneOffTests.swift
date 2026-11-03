@@ -178,11 +178,37 @@ final class OneOffTests: XCTestCase {
     try Data("old".utf8).write(to: URL(fileURLWithPath: file))
     _ = try git(allocation.path, ["add", "Example.app/Contents/state.txt"])
     let old = Date().addingTimeInterval(-7 * 24 * 3600)
-    for path in ["tracked", ".gitignore", "Example.app/Contents/state.txt"] {
+    for path in [
+      "", "tracked", ".gitignore", "Example.app", "Example.app/Contents",
+      "Example.app/Contents/state.txt",
+    ] {
       try FileManager.default.setAttributes(
         [.modificationDate: old], ofItemAtPath: allocation.path + "/" + path)
     }
     try Data("recent".utf8).write(to: URL(fileURLWithPath: file))
+    let preview = try XCTUnwrap(
+      fixture.registry.oneOffPreview(
+        id: allocation.id, minimumIdle: 24 * 3600, transcriptDirectory: fixture.root
+      ).first)
+    XCTAssertFalse(preview.isEligible)
+    XCTAssertTrue(preview.reasons.contains("Minimum idle age has not elapsed"))
+  }
+
+  func testDeletingAFileCountsAsRecentActivity() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.registry.start(
+      branch: UUID().uuidString, repository: fixture.repository, provider: .git)
+    let deleted = allocation.path + "/deleted.txt"
+    try Data("old".utf8).write(to: URL(fileURLWithPath: deleted))
+    _ = try git(allocation.path, ["add", "deleted.txt"])
+    let old = Date().addingTimeInterval(-7 * 24 * 3600)
+    for path in [
+      allocation.path + "/tracked", allocation.path + "/.gitignore", deleted,
+      allocation.path,
+    ] {
+      try FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: path)
+    }
+    try FileManager.default.removeItem(atPath: deleted)
     let preview = try XCTUnwrap(
       fixture.registry.oneOffPreview(
         id: allocation.id, minimumIdle: 24 * 3600, transcriptDirectory: fixture.root
@@ -198,7 +224,7 @@ final class OneOffTests: XCTestCase {
     try Data("old staged change".utf8).write(to: URL(fileURLWithPath: allocation.path + "/tracked"))
     _ = try git(allocation.path, ["add", "tracked"])
     let old = Date().addingTimeInterval(-7_200)
-    for path in ["tracked", ".gitignore"] {
+    for path in ["", "tracked", ".gitignore"] {
       try FileManager.default.setAttributes(
         [.modificationDate: old], ofItemAtPath: allocation.path + "/" + path)
     }

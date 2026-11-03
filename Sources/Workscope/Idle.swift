@@ -11,7 +11,7 @@ public struct OneOffPreview: Codable, Sendable {
   public var isEligible: Bool { reasons.isEmpty }
 }
 
-private func lastFileActivity(_ path: String) throws -> Date {
+func lastFileActivity(_ path: String) throws -> Date {
   let manager = FileManager.default
   let root = URL(fileURLWithPath: path)
   var enumerationError: Error?
@@ -24,21 +24,19 @@ private func lastFileActivity(_ path: String) throws -> Date {
       }
     )
   else { throw WorkscopeError("Cannot inspect checkout activity") }
-  var latest: Date?
+  var latest =
+    try root.resourceValues(forKeys: [.contentModificationDateKey])
+    .contentModificationDate ?? .distantPast
   for case let file as URL in files {
     if file.lastPathComponent == ".git" {
       files.skipDescendants()
       continue
     }
-    let values = try file.resourceValues(
-      forKeys: [.contentModificationDateKey, .isDirectoryKey])
-    if values.isDirectory == true { continue }
-    latest = max(latest ?? .distantPast, values.contentModificationDate ?? .distantPast)
+    let values = try file.resourceValues(forKeys: [.contentModificationDateKey])
+    latest = max(latest, values.contentModificationDate ?? .distantPast)
   }
   if let enumerationError { throw enumerationError }
-  return try latest
-    ?? root.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-    ?? .distantPast
+  return latest
 }
 
 private func transcriptMentions(

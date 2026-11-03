@@ -280,11 +280,16 @@ public struct Registry: Sendable {
           _ = try git(
             allocation.repository,
             ["-c", "core.fsync=reference", "update-ref", reference, offload.commit, ""])
+          let activity = try lastFileActivity(allocation.path)
+          try require(
+            max(activity, preview.lastMention ?? .distantPast).addingTimeInterval(minimumIdle)
+              <= Date(),
+            "Checkout changed within the minimum idle age")
           allocation.recovery = RecoveryRecord(
             commit: offload.commit, reference: reference,
             branch: try? git(allocation.path, ["symbolic-ref", "--short", "HEAD"]),
             preservedAt: Date(), event: isRemote ? "manual-offload-remote" : "manual-offload-local",
-            lastFileActivity: preview.lastFileActivity)
+            lastFileActivity: activity)
           try verifyRecovery(allocation)
           try store.save(allocation)
           try require(
