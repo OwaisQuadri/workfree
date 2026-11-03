@@ -136,22 +136,17 @@ func transcriptMentions(
   var latest: [String: Date] = [:]
   let mentionStrings = allocations.flatMap { [$0.id, $0.path] }
   let mentionBytes = mentionStrings.map { Data($0.utf8) }
+  let longestMention = mentionStrings.map(\.count).max() ?? 0
   let backslash = Data([92])
   let formatter = ISO8601DateFormatter()
   formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
   func readLine(_ data: Data) throws {
     let isRawMentionPresent = mentionBytes.contains { data.range(of: $0) != nil }
-    let isEscapePresent = data.range(of: backslash) != nil
-    guard isRawMentionPresent || isEscapePresent else { return }
-    let parsed: Any
-    do {
-      parsed = try JSONSerialization.jsonObject(with: data)
-    } catch {
-      if isRawMentionPresent || isUnescapedJSONReference(data, matching: mentionBytes) {
-        throw error
-      }
-      return
-    }
+    let isEscapedMentionPresent =
+      data.range(of: backslash) != nil
+      && isUnescapedJSONReference(data, matching: mentionBytes)
+    guard isRawMentionPresent || isEscapedMentionPresent else { return }
+    let parsed = try JSONSerialization.jsonObject(with: data)
     guard let entry = parsed as? [String: Any],
       entry["type"] as? String == "message",
       let message = entry["message"] as? [String: Any],
@@ -162,13 +157,20 @@ func transcriptMentions(
     guard let date = formatter.date(from: stamp) else {
       throw WorkscopeError("Invalid conversation timestamp")
     }
-    let text = contents.compactMap { part -> String? in
-      guard part["type"] as? String == "text" else { return nil }
-      return part["text"] as? String
-    }.joined(separator: "\n")
-    for allocation in allocations
-    where text.contains(allocation.id) || text.contains(allocation.path) {
-      latest[allocation.id] = max(latest[allocation.id] ?? .distantPast, date)
+    var tail = ""
+    var isTextSeen = false
+    for part in contents where part["type"] as? String == "text" {
+      guard let text = part["text"] as? String else { continue }
+      let boundary = tail + (isTextSeen ? "\n" : "") + text.prefix(longestMention)
+      for allocation in allocations
+      where text.contains(allocation.id) || text.contains(allocation.path)
+        || boundary.contains(allocation.id) || boundary.contains(allocation.path)
+      {
+        latest[allocation.id] = max(latest[allocation.id] ?? .distantPast, date)
+      }
+      tail = String(
+        (tail + (isTextSeen ? "\n" : "") + text.suffix(longestMention)).suffix(longestMention))
+      isTextSeen = true
     }
   }
   for case let file as URL in files where file.pathExtension == "jsonl" {
@@ -184,20 +186,27 @@ func transcriptMentions(
     let handle = try FileHandle(forReadingFrom: file)
     defer { try? handle.close() }
     var pending = Data()
-    while let chunk = try handle.read(upToCount: 65_536), !chunk.isEmpty {
-      var start = chunk.startIndex
-      while let newline = chunk[start...].firstIndex(of: 10) {
-        pending.append(chunk[start..<newline])
+    var isReading = true
+    while isReading {
+      try autoreleasepool {
+        guard let chunk = try handle.read(upToCount: 65_536), !chunk.isEmpty else {
+          isReading = false
+          return
+        }
+        var start = chunk.startIndex
+        while let newline = chunk[start...].firstIndex(of: 10) {
+          pending.append(chunk[start..<newline])
+          guard pending.count <= maximumRecordBytes else {
+            throw WorkscopeError("Conversation record exceeds 64 MiB")
+          }
+          try readLine(pending)
+          pending.removeAll(keepingCapacity: true)
+          start = chunk.index(after: newline)
+        }
+        pending.append(chunk[start...])
         guard pending.count <= maximumRecordBytes else {
           throw WorkscopeError("Conversation record exceeds 64 MiB")
         }
-        try readLine(pending)
-        pending.removeAll(keepingCapacity: true)
-        start = chunk.index(after: newline)
-      }
-      pending.append(chunk[start...])
-      guard pending.count <= maximumRecordBytes else {
-        throw WorkscopeError("Conversation record exceeds 64 MiB")
       }
     }
     if !pending.isEmpty { try readLine(pending) }
