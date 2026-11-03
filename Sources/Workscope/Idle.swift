@@ -52,8 +52,20 @@ func unescapedJSONReferences(_ data: Data) -> Data {
   var index = 0
   while index < bytes.count {
     if bytes[index] == 92, index + 1 < bytes.count {
-      if bytes[index + 1] == 47 {
-        result.append(47)
+      let escaped: UInt8? =
+        switch bytes[index + 1] {
+        case 34: 34
+        case 92: 92
+        case 47: 47
+        case 98: 8
+        case 102: 12
+        case 110: 10
+        case 114: 13
+        case 116: 9
+        default: nil
+        }
+      if let escaped {
+        result.append(escaped)
         index += 2
         continue
       }
@@ -100,8 +112,7 @@ func transcriptMentions(
   let mentionBytes = mentionStrings.map { Data($0.utf8) }
   let rawPattern = try NSRegularExpression(
     pattern: mentionStrings.map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|"))
-  let unicodeEscape = Data("\\u".utf8)
-  let slashEscape = Data("\\/".utf8)
+  let backslash = Data([92])
   let formatter = ISO8601DateFormatter()
   formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
   func readLine(_ data: Data) throws {
@@ -109,7 +120,7 @@ func transcriptMentions(
     let hasRawMention =
       rawPattern.firstMatch(
         in: line, range: NSRange(line.startIndex..<line.endIndex, in: line)) != nil
-    let hasEscape = data.range(of: unicodeEscape) != nil || data.range(of: slashEscape) != nil
+    let hasEscape = data.range(of: backslash) != nil
     guard hasRawMention || hasEscape else { return }
     let parsed: Any
     do {
