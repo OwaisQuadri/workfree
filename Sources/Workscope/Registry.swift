@@ -332,7 +332,8 @@ public struct Registry: Sendable {
     id: String? = nil, repository: String? = nil, minimumIdle: TimeInterval,
     transcriptDirectory: String
   ) throws -> [Allocation] {
-    try withRegistry(stateDirectory) { store in
+    try require(minimumIdle >= 0 && minimumIdle.isFinite, "Invalid minimum idle age")
+    return try withRegistry(stateDirectory) { store in
       let source = try repository.map(canonical)
       let allocations = try id.map { [try store.allocation($0)] } ?? store.allocations()
       let transcriptScanStarted = Date().addingTimeInterval(-1)

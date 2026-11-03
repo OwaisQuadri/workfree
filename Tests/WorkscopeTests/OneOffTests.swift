@@ -605,6 +605,28 @@ final class OneOffTests: XCTestCase {
     XCTAssertTrue(FileManager.default.fileExists(atPath: allocation.path))
   }
 
+  func testInvalidCleanupAgeDoesNotEnrollAnExistingCheckpoint() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.registry.start(
+      branch: UUID().uuidString, repository: fixture.repository, provider: .git)
+    _ = try fixture.registry.offload(
+      id: allocation.id, minimumIdle: 0, transcriptDirectory: fixture.root, isRemote: false)
+    _ = try fixture.registry.restore(allocation.id)
+    try withRegistry(fixture.registry.stateDirectory) { store in
+      var pending = try store.allocation(allocation.id)
+      pending.offloadCleanup = nil
+      try store.save(pending)
+    }
+    for age in [-1.0, .nan, .infinity] {
+      XCTAssertThrowsError(
+        try fixture.registry.oneOffCleanup(
+          id: allocation.id, minimumIdle: age, transcriptDirectory: fixture.root))
+      XCTAssertNil(try fixture.registry.inspect(allocation.id).offloadCleanup)
+    }
+    XCTAssertNoThrow(try fixture.registry.sweep())
+    XCTAssertTrue(FileManager.default.fileExists(atPath: allocation.path))
+  }
+
   func testCleanupNowEnrollsAnExistingCheckpointForAutomaticReclamation() throws {
     let fixture = try Fixture()
     let allocation = try fixture.registry.start(
