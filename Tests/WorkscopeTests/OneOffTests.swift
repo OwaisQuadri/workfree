@@ -273,6 +273,18 @@ final class OneOffTests: XCTestCase {
     XCTAssertThrowsError(try transcriptMentions([allocation], directory: fixture.root))
   }
 
+  func testMalformedEscapedMentionAcrossBufferBoundaryBlocksOffload() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.registry.start(
+      branch: UUID().uuidString, repository: fixture.repository, provider: .git)
+    let escaped = allocation.id.unicodeScalars.map { String(format: "\\u%04x", $0.value) }.joined()
+    let invalid = "{\"content\":\"" + String(repeating: "z", count: 8_174) + escaped + "{\n"
+    XCTAssertNil(Data(invalid.utf8).range(of: Data(allocation.id.utf8)))
+    try Data(invalid.utf8).write(
+      to: URL(fileURLWithPath: fixture.root + "/invalid.jsonl"))
+    XCTAssertThrowsError(try transcriptMentions([allocation], directory: fixture.root))
+  }
+
   func testMalformedUnicodeEscapedPathBlocksOffload() throws {
     let fixture = try Fixture()
     let allocation = try fixture.registry.start(

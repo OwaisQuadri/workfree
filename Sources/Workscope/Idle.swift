@@ -39,56 +39,82 @@ func lastFileActivity(_ path: String) throws -> Date {
   return latest
 }
 
-func unescapedJSONReferences(_ data: Data) -> Data {
-  let bytes = Array(data)
-  var result = Data()
-  result.reserveCapacity(bytes.count)
-  func codeUnit(at index: Int) -> UInt32? {
-    guard index + 5 < bytes.count, bytes[index] == 92, bytes[index + 1] == 117 else {
-      return nil
-    }
-    return UInt32(String(decoding: bytes[(index + 2)...(index + 5)], as: UTF8.self), radix: 16)
+func isUnescapedJSONReference(_ data: Data, matching mentions: [Data]) -> Bool {
+  guard let longest = mentions.map(\.count).max(), longest > 0 else { return false }
+  let chunkSize = max(8_192, longest * 2)
+  var buffer = Data()
+  buffer.reserveCapacity(chunkSize + 4)
+  func isMentionPresent() -> Bool { mentions.contains { buffer.range(of: $0) != nil } }
+  func isMentionPresentAfterAppending(_ byte: UInt8) -> Bool {
+    buffer.append(byte)
+    guard buffer.count >= chunkSize else { return false }
+    if isMentionPresent() { return true }
+    buffer.removeFirst(buffer.count - longest + 1)
+    return false
   }
-  var index = 0
-  while index < bytes.count {
-    if bytes[index] == 92, index + 1 < bytes.count {
-      let escaped: UInt8? =
-        switch bytes[index + 1] {
-        case 34: 34
-        case 92: 92
-        case 47: 47
-        case 98: 8
-        case 102: 12
-        case 110: 10
-        case 114: 13
-        case 116: 9
-        default: nil
-        }
-      if let escaped {
-        result.append(escaped)
-        index += 2
-        continue
+  return data.withUnsafeBytes { bytes in
+    func codeUnit(at index: Int) -> UInt32? {
+      guard index + 5 < bytes.count, bytes[index] == 92, bytes[index + 1] == 117 else {
+        return nil
       }
-      if let first = codeUnit(at: index) {
-        if (0xD800...0xDBFF).contains(first), let second = codeUnit(at: index + 6),
-          (0xDC00...0xDFFF).contains(second),
-          let scalar = UnicodeScalar(0x10000 + (first - 0xD800) * 0x400 + second - 0xDC00)
-        {
-          result.append(contentsOf: String(scalar).utf8)
-          index += 12
+      var value: UInt32 = 0
+      for digit in bytes[(index + 2)...(index + 5)] {
+        let nibble: UInt32
+        switch digit {
+        case 48...57: nibble = UInt32(digit - 48)
+        case 65...70: nibble = UInt32(digit - 55)
+        case 97...102: nibble = UInt32(digit - 87)
+        default: return nil
+        }
+        value = value * 16 + nibble
+      }
+      return value
+    }
+    var index = 0
+    while index < bytes.count {
+      if bytes[index] == 92, index + 1 < bytes.count {
+        let escaped: UInt8? =
+          switch bytes[index + 1] {
+          case 34: 34
+          case 92: 92
+          case 47: 47
+          case 98: 8
+          case 102: 12
+          case 110: 10
+          case 114: 13
+          case 116: 9
+          default: nil
+          }
+        if let escaped {
+          if isMentionPresentAfterAppending(escaped) { return true }
+          index += 2
           continue
         }
-        if let scalar = UnicodeScalar(first) {
-          result.append(contentsOf: String(scalar).utf8)
-          index += 6
-          continue
+        if let first = codeUnit(at: index) {
+          if (0xD800...0xDBFF).contains(first), let second = codeUnit(at: index + 6),
+            (0xDC00...0xDFFF).contains(second),
+            let scalar = UnicodeScalar(0x10000 + (first - 0xD800) * 0x400 + second - 0xDC00)
+          {
+            for byte in String(scalar).utf8 {
+              if isMentionPresentAfterAppending(byte) { return true }
+            }
+            index += 12
+            continue
+          }
+          if let scalar = UnicodeScalar(first) {
+            for byte in String(scalar).utf8 {
+              if isMentionPresentAfterAppending(byte) { return true }
+            }
+            index += 6
+            continue
+          }
         }
       }
+      if isMentionPresentAfterAppending(bytes[index]) { return true }
+      index += 1
     }
-    result.append(bytes[index])
-    index += 1
+    return isMentionPresent()
   }
-  return result
 }
 
 func transcriptMentions(
@@ -110,25 +136,20 @@ func transcriptMentions(
   var latest: [String: Date] = [:]
   let mentionStrings = allocations.flatMap { [$0.id, $0.path] }
   let mentionBytes = mentionStrings.map { Data($0.utf8) }
-  let rawPattern = try NSRegularExpression(
-    pattern: mentionStrings.map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|"))
   let backslash = Data([92])
   let formatter = ISO8601DateFormatter()
   formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
   func readLine(_ data: Data) throws {
-    let line = String(decoding: data, as: UTF8.self)
-    let hasRawMention =
-      rawPattern.firstMatch(
-        in: line, range: NSRange(line.startIndex..<line.endIndex, in: line)) != nil
-    let hasEscape = data.range(of: backslash) != nil
-    guard hasRawMention || hasEscape else { return }
+    let isRawMentionPresent = mentionBytes.contains { data.range(of: $0) != nil }
+    let isEscapePresent = data.range(of: backslash) != nil
+    guard isRawMentionPresent || isEscapePresent else { return }
     let parsed: Any
     do {
       parsed = try JSONSerialization.jsonObject(with: data)
     } catch {
-      if hasRawMention { throw error }
-      let unescaped = unescapedJSONReferences(data)
-      if mentionBytes.contains(where: { unescaped.range(of: $0) != nil }) { throw error }
+      if isRawMentionPresent || isUnescapedJSONReference(data, matching: mentionBytes) {
+        throw error
+      }
       return
     }
     guard let entry = parsed as? [String: Any],
