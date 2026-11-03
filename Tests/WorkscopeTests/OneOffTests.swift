@@ -231,6 +231,46 @@ final class OneOffTests: XCTestCase {
     }
   }
 
+  func testCanonicallyEquivalentEscapedPathMentionBlocksOffload() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.registry.start(
+      branch: UUID().uuidString, repository: fixture.repository,
+      path: fixture.root + "/café-checkout", provider: .git)
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let decomposed = allocation.path.decomposedStringWithCanonicalMapping
+    let record: [String: Any] = [
+      "type": "message", "timestamp": formatter.string(from: Date()),
+      "message": ["role": "user", "content": [["type": "text", "text": decomposed]]],
+    ]
+    let json = try XCTUnwrap(
+      String(data: JSONSerialization.data(withJSONObject: record), encoding: .utf8))
+    let encoded = Data(json.replacingOccurrences(of: "\u{0301}", with: "\\u0301").utf8)
+    XCTAssertNil(encoded.range(of: Data(allocation.path.utf8)))
+    try (encoded + Data([10])).write(to: URL(fileURLWithPath: fixture.root + "/unicode.jsonl"))
+    XCTAssertNotNil(try transcriptMentions([allocation], directory: fixture.root)[allocation.id])
+  }
+
+  func testPathMentionAcrossTextPartsBlocksOffload() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.registry.start(
+      branch: UUID().uuidString, repository: fixture.repository,
+      path: fixture.root + "/segment\nsuffix", provider: .git)
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let pathParts = allocation.path.components(separatedBy: "\n")
+    let record: [String: Any] = [
+      "type": "message", "timestamp": formatter.string(from: Date()),
+      "message": [
+        "role": "user", "content": pathParts.map { ["type": "text", "text": $0] },
+      ],
+    ]
+    let encoded = try JSONSerialization.data(withJSONObject: record)
+    XCTAssertNil(encoded.range(of: Data(allocation.path.utf8)))
+    try (encoded + Data([10])).write(to: URL(fileURLWithPath: fixture.root + "/parts.jsonl"))
+    XCTAssertNotNil(try transcriptMentions([allocation], directory: fixture.root)[allocation.id])
+  }
+
   func testRecordLimitIsCheckedPerLineNotPerReadChunk() throws {
     let fixture = try Fixture()
     let allocation = try fixture.registry.start(

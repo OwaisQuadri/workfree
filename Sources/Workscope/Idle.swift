@@ -136,16 +136,26 @@ func transcriptMentions(
   var latest: [String: Date] = [:]
   let mentionStrings = allocations.flatMap { [$0.id, $0.path] }
   let mentionBytes = mentionStrings.map { Data($0.utf8) }
+  let uncertainPathPrefixes = allocations.compactMap { allocation -> Data? in
+    let bytes = Array(allocation.path.utf8)
+    guard bytes.contains(where: { $0 >= 128 || $0 == 10 }) else { return nil }
+    return Data(bytes.prefix { $0 < 128 && $0 != 10 })
+  }
   let longestMention = mentionStrings.map(\.count).max() ?? 0
   let backslash = Data([92])
   let formatter = ISO8601DateFormatter()
   formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
   func readLine(_ data: Data) throws {
     let isRawMentionPresent = mentionBytes.contains { data.range(of: $0) != nil }
+    let isEscapePresent = data.range(of: backslash) != nil
     let isEscapedMentionPresent =
-      data.range(of: backslash) != nil
+      isEscapePresent
       && isUnescapedJSONReference(data, matching: mentionBytes)
-    guard isRawMentionPresent || isEscapedMentionPresent else { return }
+    let isUncertainPathPossible = uncertainPathPrefixes.contains { prefix in
+      prefix.isEmpty || data.range(of: prefix) != nil
+        || (isEscapePresent && isUnescapedJSONReference(data, matching: [prefix]))
+    }
+    guard isRawMentionPresent || isEscapedMentionPresent || isUncertainPathPossible else { return }
     let parsed = try JSONSerialization.jsonObject(with: data)
     guard let entry = parsed as? [String: Any],
       entry["type"] as? String == "message",
