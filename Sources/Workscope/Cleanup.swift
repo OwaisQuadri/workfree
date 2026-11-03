@@ -469,7 +469,10 @@ func reconcileRemoval(_ allocation: inout Allocation, store: RegistryStore) thro
       allocation.isRemovalPending = false
       allocation.phase = .retained
       if isManual {
-        allocation.reason = "Manual cleanup interrupted; run cleanup-now after checking idle age"
+        allocation.reason =
+          allocation.offloadCleanup == nil
+          ? "Manual cleanup interrupted; run cleanup-now after checking idle age"
+          : "Manual cleanup interrupted; the next sweep retries after idle and safety checks"
         recordAttempt(&allocation, event: "recovery", reasons: [allocation.reason!])
         try store.save(allocation)
         return

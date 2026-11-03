@@ -716,6 +716,9 @@ final class OneOffTests: XCTestCase {
     let retained = try fixture.registry.inspect(allocation.id)
     XCTAssertEqual(retained.phase, .retained)
     XCTAssertFalse(retained.isRemovalPending)
+    XCTAssertEqual(
+      retained.reason,
+      "Manual cleanup interrupted; the next sweep retries after idle and safety checks")
     XCTAssertTrue(FileManager.default.fileExists(atPath: allocation.path))
     let old = Date().addingTimeInterval(-7_200)
     for path in ["", "tracked", ".gitignore"] {
