@@ -39,9 +39,89 @@ func lastFileActivity(_ path: String) throws -> Date {
   return latest
 }
 
+func isUnescapedJSONReference(_ data: Data, matching mentions: [Data]) -> Bool {
+  guard let longest = mentions.map(\.count).max(), longest > 0 else { return false }
+  let chunkSize = max(8_192, longest * 2)
+  var buffer = Data()
+  buffer.reserveCapacity(chunkSize + 4)
+  func isMentionPresent() -> Bool { mentions.contains { buffer.range(of: $0) != nil } }
+  func isMentionPresentAfterAppending(_ byte: UInt8) -> Bool {
+    buffer.append(byte)
+    guard buffer.count >= chunkSize else { return false }
+    if isMentionPresent() { return true }
+    buffer.removeFirst(buffer.count - longest + 1)
+    return false
+  }
+  return data.withUnsafeBytes { bytes in
+    func codeUnit(at index: Int) -> UInt32? {
+      guard index + 5 < bytes.count, bytes[index] == 92, bytes[index + 1] == 117 else {
+        return nil
+      }
+      var value: UInt32 = 0
+      for digit in bytes[(index + 2)...(index + 5)] {
+        let nibble: UInt32
+        switch digit {
+        case 48...57: nibble = UInt32(digit - 48)
+        case 65...70: nibble = UInt32(digit - 55)
+        case 97...102: nibble = UInt32(digit - 87)
+        default: return nil
+        }
+        value = value * 16 + nibble
+      }
+      return value
+    }
+    var index = 0
+    while index < bytes.count {
+      if bytes[index] == 92, index + 1 < bytes.count {
+        let escaped: UInt8? =
+          switch bytes[index + 1] {
+          case 34: 34
+          case 92: 92
+          case 47: 47
+          case 98: 8
+          case 102: 12
+          case 110: 10
+          case 114: 13
+          case 116: 9
+          default: nil
+          }
+        if let escaped {
+          if isMentionPresentAfterAppending(escaped) { return true }
+          index += 2
+          continue
+        }
+        if let first = codeUnit(at: index) {
+          if (0xD800...0xDBFF).contains(first), let second = codeUnit(at: index + 6),
+            (0xDC00...0xDFFF).contains(second),
+            let scalar = UnicodeScalar(0x10000 + (first - 0xD800) * 0x400 + second - 0xDC00)
+          {
+            for byte in String(scalar).utf8 {
+              if isMentionPresentAfterAppending(byte) { return true }
+            }
+            index += 12
+            continue
+          }
+          if let scalar = UnicodeScalar(first) {
+            for byte in String(scalar).utf8 {
+              if isMentionPresentAfterAppending(byte) { return true }
+            }
+            index += 6
+            continue
+          }
+        }
+      }
+      if isMentionPresentAfterAppending(bytes[index]) { return true }
+      index += 1
+    }
+    return isMentionPresent()
+  }
+}
+
 func transcriptMentions(
-  _ allocations: [Allocation], directory: String
+  _ allocations: [Allocation], directory: String, modifiedSince: Date? = nil,
+  maximumRecordBytes: Int = 64 * 1_024 * 1_024
 ) throws -> [String: Date] {
+  guard !allocations.isEmpty else { return [:] }
   let root = URL(fileURLWithPath: directory)
   var enumerationError: Error?
   guard
@@ -54,10 +134,34 @@ func transcriptMentions(
     )
   else { throw WorkscopeError("Cannot inspect conversation transcripts") }
   var latest: [String: Date] = [:]
+  let mentionStrings = allocations.flatMap { [$0.id, $0.path] }
+  let mentionBytes = mentionStrings.map { Data($0.utf8) }
+  let asciiWithNonASCIIEquivalent = Data(";K`".utf8)
+  let uncertainPathPrefixes = allocations.compactMap { allocation -> Data? in
+    let bytes = Array(allocation.path.utf8)
+    let isUncertain = { (byte: UInt8) in
+      byte >= 128 || byte == 10 || asciiWithNonASCIIEquivalent.contains(byte)
+    }
+    guard bytes.contains(where: isUncertain) else { return nil }
+    return Data(bytes.prefix { !isUncertain($0) })
+  }
+  let longestMention = mentionStrings.map(\.count).max() ?? 0
+  let backslash = Data([92])
   let formatter = ISO8601DateFormatter()
   formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
   func readLine(_ data: Data) throws {
-    guard let entry = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+    let isRawMentionPresent = mentionBytes.contains { data.range(of: $0) != nil }
+    let isEscapePresent = data.range(of: backslash) != nil
+    let isEscapedMentionPresent =
+      isEscapePresent
+      && isUnescapedJSONReference(data, matching: mentionBytes)
+    let isUncertainPathPossible = uncertainPathPrefixes.contains { prefix in
+      prefix.isEmpty || data.range(of: prefix) != nil
+        || (isEscapePresent && isUnescapedJSONReference(data, matching: [prefix]))
+    }
+    guard isRawMentionPresent || isEscapedMentionPresent || isUncertainPathPossible else { return }
+    let parsed = try JSONSerialization.jsonObject(with: data)
+    guard let entry = parsed as? [String: Any],
       entry["type"] as? String == "message",
       let message = entry["message"] as? [String: Any],
       let role = message["role"] as? String, role == "user" || role == "assistant",
@@ -67,27 +171,56 @@ func transcriptMentions(
     guard let date = formatter.date(from: stamp) else {
       throw WorkscopeError("Invalid conversation timestamp")
     }
-    let text = contents.compactMap { part -> String? in
-      guard part["type"] as? String == "text" else { return nil }
-      return part["text"] as? String
-    }.joined(separator: "\n")
-    for allocation in allocations
-    where text.contains(allocation.id) || text.contains(allocation.path) {
-      latest[allocation.id] = max(latest[allocation.id] ?? .distantPast, date)
+    var tail = ""
+    var isTextSeen = false
+    for part in contents where part["type"] as? String == "text" {
+      guard let text = part["text"] as? String else { continue }
+      let boundary = tail + (isTextSeen ? "\n" : "") + text.prefix(longestMention)
+      for allocation in allocations
+      where text.contains(allocation.id) || text.contains(allocation.path)
+        || boundary.contains(allocation.id) || boundary.contains(allocation.path)
+      {
+        latest[allocation.id] = max(latest[allocation.id] ?? .distantPast, date)
+      }
+      tail = String(
+        (tail + (isTextSeen ? "\n" : "") + text.suffix(longestMention)).suffix(longestMention))
+      isTextSeen = true
     }
   }
   for case let file as URL in files where file.pathExtension == "jsonl" {
-    guard try file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
+    let attributes = try file.resourceValues(forKeys: [
+      .isRegularFileKey, .contentModificationDateKey,
+    ])
+    guard attributes.isRegularFile == true else { continue }
+    if let modifiedSince, let modified = attributes.contentModificationDate,
+      modified < modifiedSince
+    {
       continue
     }
     let handle = try FileHandle(forReadingFrom: file)
     defer { try? handle.close() }
     var pending = Data()
-    while let chunk = try handle.read(upToCount: 65_536), !chunk.isEmpty {
-      pending.append(chunk)
-      while let newline = pending.firstIndex(of: 10) {
-        try readLine(pending.prefix(upTo: newline))
-        pending.removeSubrange(...newline)
+    var isReading = true
+    while isReading {
+      try autoreleasepool {
+        guard let chunk = try handle.read(upToCount: 65_536), !chunk.isEmpty else {
+          isReading = false
+          return
+        }
+        var start = chunk.startIndex
+        while let newline = chunk[start...].firstIndex(of: 10) {
+          pending.append(chunk[start..<newline])
+          guard pending.count <= maximumRecordBytes else {
+            throw WorkscopeError("Conversation record exceeds 64 MiB")
+          }
+          try readLine(pending)
+          pending.removeAll(keepingCapacity: true)
+          start = chunk.index(after: newline)
+        }
+        pending.append(chunk[start...])
+        guard pending.count <= maximumRecordBytes else {
+          throw WorkscopeError("Conversation record exceeds 64 MiB")
+        }
       }
     }
     if !pending.isEmpty { try readLine(pending) }
@@ -98,12 +231,13 @@ func transcriptMentions(
 
 func oneOffPreviews(
   _ allocations: [Allocation], minimumIdle: TimeInterval, transcriptDirectory: String,
-  isCheckpointRequired: Bool = false, now: Date = Date()
+  isCheckpointRequired: Bool = false, modifiedSince: Date? = nil, now: Date = Date()
 ) throws -> [OneOffPreview] {
   try require(minimumIdle >= 0 && minimumIdle.isFinite, "Invalid minimum idle age")
   let mentions =
     try minimumIdle > 0
-    ? transcriptMentions(allocations, directory: transcriptDirectory) : [:]
+    ? transcriptMentions(allocations, directory: transcriptDirectory, modifiedSince: modifiedSince)
+    : [:]
   return try allocations.map { allocation in
     var reasons = ownershipReasons(allocation, isManual: true)
     if allocation.phase == .creating || allocation.phase == .failed || allocation.phase == .removed

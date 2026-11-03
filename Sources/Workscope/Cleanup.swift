@@ -280,7 +280,8 @@ func cleanupPreview(
 
 func cleanup(
   _ allocation: inout Allocation, store: RegistryStore, event: String = "owner-release",
-  minimumIdle: TimeInterval? = nil, transcriptDirectory: String? = nil
+  minimumIdle: TimeInterval? = nil, transcriptDirectory: String? = nil,
+  transcriptModifiedSince: Date? = nil
 ) throws {
   if allocation.phase == .removed { return }
   if allocation.isRemovalPending {
@@ -370,7 +371,7 @@ func cleanup(
       }
       let current = try oneOffPreviews(
         [allocation], minimumIdle: minimumIdle, transcriptDirectory: transcriptDirectory,
-        isCheckpointRequired: true)[0]
+        isCheckpointRequired: true, modifiedSince: transcriptModifiedSince)[0]
       try require(current.isEligible, current.reasons.joined(separator: "; "))
     }
     allocation.phase = .removing

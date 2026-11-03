@@ -264,6 +264,7 @@ public struct Registry: Sendable {
     try withRegistry(stateDirectory) { store in
       let source = try repository.map(canonical)
       let allocations = try id.map { [try store.allocation($0)] } ?? store.allocations()
+      let transcriptScanStarted = Date().addingTimeInterval(-1)
       let candidates = try oneOffPreviews(
         allocations.filter { source == nil || $0.repository == source },
         minimumIdle: minimumIdle, transcriptDirectory: transcriptDirectory)
@@ -283,7 +284,9 @@ public struct Registry: Sendable {
           let activity = try lastFileActivity(allocation.path)
           let mentions =
             try minimumIdle > 0
-            ? transcriptMentions([allocation], directory: transcriptDirectory) : [:]
+            ? transcriptMentions(
+              [allocation], directory: transcriptDirectory,
+              modifiedSince: transcriptScanStarted) : [:]
           try require(
             max(activity, mentions[allocation.id] ?? .distantPast)
               .addingTimeInterval(minimumIdle) <= Date(),
@@ -324,6 +327,7 @@ public struct Registry: Sendable {
     try withRegistry(stateDirectory) { store in
       let source = try repository.map(canonical)
       let allocations = try id.map { [try store.allocation($0)] } ?? store.allocations()
+      let transcriptScanStarted = Date().addingTimeInterval(-1)
       let candidates = try oneOffPreviews(
         allocations.filter { source == nil || $0.repository == source },
         minimumIdle: minimumIdle, transcriptDirectory: transcriptDirectory,
@@ -333,7 +337,7 @@ public struct Registry: Sendable {
         var allocation = try store.allocation(preview.id)
         try cleanup(
           &allocation, store: store, event: "manual-cleanup", minimumIdle: minimumIdle,
-          transcriptDirectory: transcriptDirectory)
+          transcriptDirectory: transcriptDirectory, transcriptModifiedSince: transcriptScanStarted)
         results.append(allocation)
       }
       return results
