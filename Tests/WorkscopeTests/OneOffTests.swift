@@ -231,6 +231,69 @@ final class OneOffTests: XCTestCase {
     }
   }
 
+  func testRecordLimitIsCheckedPerLineNotPerReadChunk() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.registry.start(
+      branch: UUID().uuidString, repository: fixture.repository, provider: .git)
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let line =
+      "{\"type\":\"message\",\"timestamp\":\"\(formatter.string(from: Date()))\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"\(allocation.id)\"}]}}\n"
+    let maximum = line.utf8.count + 32
+    let unrelated = line.replacingOccurrences(
+      of: allocation.id, with: String(repeating: "x", count: allocation.id.utf8.count + 32))
+    try Data((unrelated + line).utf8).write(
+      to: URL(fileURLWithPath: fixture.root + "/records.jsonl"))
+    XCTAssertEqual(unrelated.utf8.count, maximum)
+    XCTAssertNotNil(
+      try transcriptMentions(
+        [allocation], directory: fixture.root, maximumRecordBytes: maximum)[allocation.id])
+  }
+
+  func testMalformedUnicodeEscapedPathBlocksOffload() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.registry.start(
+      branch: UUID().uuidString, repository: fixture.repository,
+      path: fixture.root + "/café-😀", provider: .git)
+    let old = Date().addingTimeInterval(-7 * 24 * 3600)
+    for path in ["", "tracked", ".gitignore"] {
+      try FileManager.default.setAttributes(
+        [.modificationDate: old], ofItemAtPath: allocation.path + "/" + path)
+    }
+    let escaped = allocation.path.replacingOccurrences(of: "é", with: "\\u00e9")
+      .replacingOccurrences(of: "😀", with: "\\ud83d\\ude00")
+    let invalid =
+      "{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"\(escaped)\\udc00\"}]}}\n"
+    try Data(invalid.utf8).write(to: URL(fileURLWithPath: fixture.root + "/unicode.jsonl"))
+    XCTAssertThrowsError(
+      try fixture.registry.oneOffPreview(
+        id: allocation.id, minimumIdle: 24 * 3600, transcriptDirectory: fixture.root))
+    XCTAssertTrue(FileManager.default.fileExists(atPath: allocation.path))
+  }
+
+  func testModifiedTranscriptRechecksMentionWithoutReadingOldHistory() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.registry.start(
+      branch: UUID().uuidString, repository: fixture.repository, provider: .git)
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let transcript = fixture.root + "/modified.jsonl"
+    let line =
+      "{\"type\":\"message\",\"timestamp\":\"\(formatter.string(from: Date()))\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"\(allocation.id)\"}]}}\n"
+    try Data(line.utf8).write(to: URL(fileURLWithPath: transcript))
+    let started = Date()
+    try FileManager.default.setAttributes(
+      [.modificationDate: started.addingTimeInterval(-3600)], ofItemAtPath: transcript)
+    XCTAssertNil(
+      try transcriptMentions([allocation], directory: fixture.root, modifiedSince: started)[
+        allocation.id])
+    try FileManager.default.setAttributes(
+      [.modificationDate: started.addingTimeInterval(1)], ofItemAtPath: transcript)
+    XCTAssertNotNil(
+      try transcriptMentions([allocation], directory: fixture.root, modifiedSince: started)[
+        allocation.id])
+  }
+
   func testUnreadableTranscriptSubtreeBlocksAgeBasedOffload() throws {
     let fixture = try Fixture()
     let allocation = try fixture.registry.start(
@@ -406,6 +469,7 @@ final class OneOffTests: XCTestCase {
         isRemote: true
       ).first)
     XCTAssertTrue(FileManager.default.fileExists(atPath: transcript))
+    XCTAssertNotNil(try transcriptMentions([allocation], directory: fixture.root)[allocation.id])
     XCTAssertEqual(result.phase, .blocked)
     XCTAssertTrue(result.reason?.contains("minimum idle age") == true)
     XCTAssertTrue(FileManager.default.fileExists(atPath: allocation.path))

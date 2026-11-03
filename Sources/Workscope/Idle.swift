@@ -39,10 +39,16 @@ func lastFileActivity(_ path: String) throws -> Date {
   return latest
 }
 
-func asciiUnescapedJSON(_ data: Data) -> Data {
+func unescapedJSONReferences(_ data: Data) -> Data {
   let bytes = Array(data)
   var result = Data()
   result.reserveCapacity(bytes.count)
+  func codeUnit(at index: Int) -> UInt32? {
+    guard index + 5 < bytes.count, bytes[index] == 92, bytes[index + 1] == 117 else {
+      return nil
+    }
+    return UInt32(String(decoding: bytes[(index + 2)...(index + 5)], as: UTF8.self), radix: 16)
+  }
   var index = 0
   while index < bytes.count {
     if bytes[index] == 92, index + 1 < bytes.count {
@@ -51,13 +57,20 @@ func asciiUnescapedJSON(_ data: Data) -> Data {
         index += 2
         continue
       }
-      if bytes[index + 1] == 117, index + 5 < bytes.count,
-        let value = UInt8(
-          String(decoding: bytes[(index + 2)...(index + 5)], as: UTF8.self), radix: 16)
-      {
-        result.append(value)
-        index += 6
-        continue
+      if let first = codeUnit(at: index) {
+        if (0xD800...0xDBFF).contains(first), let second = codeUnit(at: index + 6),
+          (0xDC00...0xDFFF).contains(second),
+          let scalar = UnicodeScalar(0x10000 + (first - 0xD800) * 0x400 + second - 0xDC00)
+        {
+          result.append(contentsOf: String(scalar).utf8)
+          index += 12
+          continue
+        }
+        if let scalar = UnicodeScalar(first) {
+          result.append(contentsOf: String(scalar).utf8)
+          index += 6
+          continue
+        }
       }
     }
     result.append(bytes[index])
@@ -67,7 +80,8 @@ func asciiUnescapedJSON(_ data: Data) -> Data {
 }
 
 func transcriptMentions(
-  _ allocations: [Allocation], directory: String
+  _ allocations: [Allocation], directory: String, modifiedSince: Date? = nil,
+  maximumRecordBytes: Int = 64 * 1_024 * 1_024
 ) throws -> [String: Date] {
   guard !allocations.isEmpty else { return [:] }
   let root = URL(fileURLWithPath: directory)
@@ -102,7 +116,7 @@ func transcriptMentions(
       parsed = try JSONSerialization.jsonObject(with: data)
     } catch {
       if hasRawMention { throw error }
-      let unescaped = asciiUnescapedJSON(data)
+      let unescaped = unescapedJSONReferences(data)
       if mentionBytes.contains(where: { unescaped.range(of: $0) != nil }) { throw error }
       return
     }
@@ -126,20 +140,32 @@ func transcriptMentions(
     }
   }
   for case let file as URL in files where file.pathExtension == "jsonl" {
-    guard try file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
+    let attributes = try file.resourceValues(forKeys: [
+      .isRegularFileKey, .contentModificationDateKey,
+    ])
+    guard attributes.isRegularFile == true else { continue }
+    if let modifiedSince, let modified = attributes.contentModificationDate,
+      modified < modifiedSince
+    {
       continue
     }
     let handle = try FileHandle(forReadingFrom: file)
     defer { try? handle.close() }
     var pending = Data()
     while let chunk = try handle.read(upToCount: 65_536), !chunk.isEmpty {
-      pending.append(chunk)
-      guard pending.count <= 64 * 1_024 * 1_024 else {
-        throw WorkscopeError("Conversation record exceeds 64 MiB")
+      var start = chunk.startIndex
+      while let newline = chunk[start...].firstIndex(of: 10) {
+        pending.append(chunk[start..<newline])
+        guard pending.count <= maximumRecordBytes else {
+          throw WorkscopeError("Conversation record exceeds 64 MiB")
+        }
+        try readLine(pending)
+        pending.removeAll(keepingCapacity: true)
+        start = chunk.index(after: newline)
       }
-      while let newline = pending.firstIndex(of: 10) {
-        try readLine(pending.prefix(upTo: newline))
-        pending.removeSubrange(...newline)
+      pending.append(chunk[start...])
+      guard pending.count <= maximumRecordBytes else {
+        throw WorkscopeError("Conversation record exceeds 64 MiB")
       }
     }
     if !pending.isEmpty { try readLine(pending) }
@@ -150,12 +176,13 @@ func transcriptMentions(
 
 func oneOffPreviews(
   _ allocations: [Allocation], minimumIdle: TimeInterval, transcriptDirectory: String,
-  isCheckpointRequired: Bool = false, now: Date = Date()
+  isCheckpointRequired: Bool = false, modifiedSince: Date? = nil, now: Date = Date()
 ) throws -> [OneOffPreview] {
   try require(minimumIdle >= 0 && minimumIdle.isFinite, "Invalid minimum idle age")
   let mentions =
     try minimumIdle > 0
-    ? transcriptMentions(allocations, directory: transcriptDirectory) : [:]
+    ? transcriptMentions(allocations, directory: transcriptDirectory, modifiedSince: modifiedSince)
+    : [:]
   return try allocations.map { allocation in
     var reasons = ownershipReasons(allocation, isManual: true)
     if allocation.phase == .creating || allocation.phase == .failed || allocation.phase == .removed
