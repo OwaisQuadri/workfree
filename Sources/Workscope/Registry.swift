@@ -244,6 +244,102 @@ public struct Registry: Sendable {
     }
   }
 
+  public func oneOffPreview(
+    id: String? = nil, repository: String? = nil, minimumIdle: TimeInterval,
+    transcriptDirectory: String
+  ) throws -> [OneOffPreview] {
+    try withRegistry(stateDirectory) { store in
+      let source = try repository.map(canonical)
+      let allocations = try id.map { [try store.allocation($0)] } ?? store.allocations()
+      return try oneOffPreviews(
+        allocations.filter { source == nil || $0.repository == source },
+        minimumIdle: minimumIdle, transcriptDirectory: transcriptDirectory)
+    }
+  }
+
+  public func offload(
+    id: String? = nil, repository: String? = nil, minimumIdle: TimeInterval,
+    transcriptDirectory: String, isRemote: Bool
+  ) throws -> [Allocation] {
+    try withRegistry(stateDirectory) { store in
+      let source = try repository.map(canonical)
+      let allocations = try id.map { [try store.allocation($0)] } ?? store.allocations()
+      let candidates = try oneOffPreviews(
+        allocations.filter { source == nil || $0.repository == source },
+        minimumIdle: minimumIdle, transcriptDirectory: transcriptDirectory)
+      var results: [Allocation] = []
+      for preview in candidates where preview.isEligible {
+        var allocation = try store.allocation(preview.id)
+        do {
+          try verifyIdentity(allocation)
+          try require(ownershipReasons(allocation, isManual: true).isEmpty, "Checkout is in use")
+          _ = try verifyFiles(allocation, isCheckpointAllowed: true)
+          let offload = try isRemote ? pushOffload(allocation) : localOffload(allocation)
+          let reference =
+            "refs/workfree/recovery/" + allocation.id + "/" + UUID().uuidString.lowercased()
+          _ = try git(
+            allocation.repository,
+            ["-c", "core.fsync=reference", "update-ref", reference, offload.commit, ""])
+          let activity = try lastFileActivity(allocation.path)
+          let mentions =
+            try minimumIdle > 0
+            ? transcriptMentions([allocation], directory: transcriptDirectory) : [:]
+          try require(
+            max(activity, mentions[allocation.id] ?? .distantPast)
+              .addingTimeInterval(minimumIdle) <= Date(),
+            "Checkout changed within the minimum idle age")
+          allocation.recovery = RecoveryRecord(
+            commit: offload.commit, reference: reference,
+            branch: try? git(allocation.path, ["symbolic-ref", "--short", "HEAD"]),
+            preservedAt: Date(), event: isRemote ? "manual-offload-remote" : "manual-offload-local",
+            lastFileActivity: activity)
+          try verifyRecovery(allocation)
+          try store.save(allocation)
+          try require(
+            try git(allocation.path, ["rev-parse", "HEAD"]) == offload.source
+              && git(allocation.path, ["write-tree"]) == offload.stagedTree
+              && checkpointTree(allocation.path)
+                == git(allocation.repository, ["rev-parse", offload.commit + "^{tree}"]),
+            "Checkout changed during offload")
+          try advanceCheckout(allocation, offload: offload)
+          allocation.phase = .retained
+          allocation.reason = nil
+          recordAttempt(&allocation, event: allocation.recovery!.event, reasons: [])
+        } catch {
+          allocation.phase = .blocked
+          allocation.reason = String(describing: error)
+          recordAttempt(&allocation, event: "manual-offload", reasons: [allocation.reason!])
+        }
+        try store.save(allocation)
+        results.append(allocation)
+      }
+      return results
+    }
+  }
+
+  public func oneOffCleanup(
+    id: String? = nil, repository: String? = nil, minimumIdle: TimeInterval,
+    transcriptDirectory: String
+  ) throws -> [Allocation] {
+    try withRegistry(stateDirectory) { store in
+      let source = try repository.map(canonical)
+      let allocations = try id.map { [try store.allocation($0)] } ?? store.allocations()
+      let candidates = try oneOffPreviews(
+        allocations.filter { source == nil || $0.repository == source },
+        minimumIdle: minimumIdle, transcriptDirectory: transcriptDirectory,
+        isCheckpointRequired: true)
+      var results: [Allocation] = []
+      for preview in candidates where preview.isEligible {
+        var allocation = try store.allocation(preview.id)
+        try cleanup(
+          &allocation, store: store, event: "manual-cleanup", minimumIdle: minimumIdle,
+          transcriptDirectory: transcriptDirectory)
+        results.append(allocation)
+      }
+      return results
+    }
+  }
+
   public func sweep() throws -> [Allocation] {
     try withRegistry(stateDirectory) { store in
       var results: [Allocation] = []
@@ -254,6 +350,7 @@ public struct Registry: Sendable {
         }
         guard allocation.phase != .removed,
           allocation.cleanupPolicy != nil || allocation.isCleanupAuthorized
+            || (allocation.isRemovalPending && allocation.recovery?.event == "manual-cleanup")
         else { continue }
         if allocation.isRemovalPending {
           try reconcileRemoval(&allocation, store: store)

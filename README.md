@@ -130,6 +130,20 @@ Legacy `--allow-cleanup` allocations keep their final-owner contract until an ex
 
 The first repository policy advances the registry format to version 3. Global setup or an exclusion advances it to version 4. The format never downgrades after revocation. Older binaries fail closed and must be updated. Update and reload Pi and any shell or workspace integrations before enabling policy. Source edits alone do not change an already loaded runtime. See [Pi runtime updates](docs/pi.md#update).
 
+## One-off offload and cleanup
+
+For a reviewed group of managed worktrees, choose a minimum idle age and checkpoint destination explicitly. Preview first:
+
+```zsh
+wf --json offload-preview --repo "$PWD" --min-idle 2w
+wf --json offload --repo "$PWD" --min-idle 2w --checkpoint remote
+wf --json cleanup-now --repo "$PWD" --min-idle 2w
+```
+
+Use an allocation identifier instead of `--repo "$PWD"` to target one checkout. Use `--checkpoint local` to keep the checkpoint only in the surviving local Git repository. `remote` pushes and verifies an allocation-specific branch on `origin` before any cleanup. Both modes preserve staged and working contents as separate commits, move the checkout to the checkpoint without overwriting files, and keep a local recovery reference. Offload does **not** remove the checkout. `cleanup-now` is a separate command that removes only worktrees with a verified manual checkpoint and no changes since it. Restore with `wf restore <allocation>`. The primary checkout remains. Offload records the earlier file activity, so it does not restart the chosen idle age. A later file change starts a new idle period. If cleanup stops while the checkout remains, a sweep retains it; run `cleanup-now` again after the age check passes.
+
+`--min-idle 0h` requests an immediate one-off pass. Other ages use hours, days, or weeks, such as `24h`, `3d`, or `2w`. The preview checks the latest file modification in each checkout and the latest direct user or assistant transcript message that names its path or allocation identifier. It also checks recorded owners and conversation claims. Use `--sessions-dir PATH` to point to a different Pi session directory. Missing or unreadable history blocks age-based offload; it never silently substitutes a guess. Active workspace, execution, pin, or conversation use blocks both steps. One-off commands do not enroll unmanaged worktrees, change standing cleanup policy, or bypass a failed identity check. `cleanup-now` reports which checkpoints it removed; review its preview before you confirm removal.
+
 ## Storage saved
 
 `wf status` and Pi's `/wf` show the last measured copy-on-write (CoW) savings without scanning every worktree:

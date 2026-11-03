@@ -6,7 +6,7 @@ private func cleanupGrace(_ allocation: Allocation) -> TimeInterval {
   return allocation.cleanupPolicySourceID == nil ? configured : max(configured, 86_400)
 }
 
-private func checkpointTree(_ path: String) throws -> String {
+func checkpointTree(_ path: String) throws -> String {
   var template = Array((NSTemporaryDirectory() + "/workfree-index.XXXXXX").utf8CString)
   guard let directory = mkdtemp(&template) else {
     throw WorkscopeError("Cannot create checkpoint index directory")
@@ -24,7 +24,7 @@ private func checkpointTree(_ path: String) throws -> String {
   return try indexedGit(["write-tree"])
 }
 
-private func pushOffload(_ allocation: Allocation) throws -> (
+func pushOffload(_ allocation: Allocation) throws -> (
   commit: String, source: String, stagedTree: String
 ) {
   let path = allocation.path
@@ -60,6 +60,21 @@ private func pushOffload(_ allocation: Allocation) throws -> (
   let published = try git(path, ["ls-remote", "--heads", "origin", reference])
     .split(separator: "\t").first.map(String.init)
   try require(published == commit, "Offload push was not confirmed")
+  return (commit, source, stagedTree)
+}
+
+func localOffload(_ allocation: Allocation) throws -> (
+  commit: String, source: String, stagedTree: String
+) {
+  let path = allocation.path
+  let source = try git(path, ["rev-parse", "--verify", "HEAD^{commit}"])
+  let stagedTree = try git(path, ["write-tree"])
+  let staged = try git(
+    path,
+    ["commit-tree", stagedTree, "-p", source, "-m", "workfree offload staged: " + allocation.id])
+  let commit = try git(
+    path,
+    ["commit-tree", checkpointTree(path), "-p", staged, "-m", "workfree offload: " + allocation.id])
   return (commit, source, stagedTree)
 }
 
@@ -111,13 +126,16 @@ func recordAttempt(_ allocation: inout Allocation, event: String, reasons: [Stri
   allocation.cleanupAttempts = Array(attempts.suffix(32))
 }
 
-func ownershipReasons(_ allocation: Allocation) -> [String] {
+func ownershipReasons(_ allocation: Allocation, isManual: Bool = false) -> [String] {
   var reasons = conversationReasons(allocation)
-  if !allocation.isCleanupAuthorized && allocation.cleanupPolicy == nil {
+  if !isManual && !allocation.isCleanupAuthorized && allocation.cleanupPolicy == nil {
     reasons.append("Cleanup is not authorized")
   }
+  if !isManual && allocation.recovery?.event.hasPrefix("manual-") == true {
+    reasons.append("Awaiting manual cleanup")
+  }
   for (token, owner) in allocation.owners.sorted(by: { $0.key < $1.key }) {
-    if owner.kind == .task && allocation.cleanupPolicy != nil { continue }
+    if owner.kind == .task && (allocation.cleanupPolicy != nil || isManual) { continue }
     reasons.append("Retained \(owner.kind.rawValue) owner: \(token)")
   }
   if allocation.retiredOwners.values.contains(where: {
@@ -219,9 +237,9 @@ func verifyRecovery(_ allocation: Allocation) throws {
 }
 
 func cleanupPreview(
-  _ allocation: Allocation, isFileVerificationRequired: Bool = true
+  _ allocation: Allocation, isFileVerificationRequired: Bool = true, isManual: Bool = false
 ) -> CleanupPreview {
-  var reasons = ownershipReasons(allocation)
+  var reasons = ownershipReasons(allocation, isManual: isManual)
   if allocation.phase == .creating || allocation.phase == .failed {
     reasons.append("Allocation identity requires recovery")
   }
@@ -230,12 +248,13 @@ func cleanupPreview(
     $0.addingTimeInterval(cleanupGrace(allocation))
   }
   let isGracePending =
-    allocation.cleanupPolicy != nil
+    !isManual && allocation.cleanupPolicy != nil
     && (eligibleAt.map { $0 > Date() } ?? (cleanupGrace(allocation) > 0))
   if isFileVerificationRequired || (reasons.isEmpty && !isGracePending) {
     do {
-      _ = try verifyFiles(allocation, isCheckpointAllowed: allocation.cleanupPolicy != nil)
-      if allocation.cleanupPolicy == nil {
+      _ = try verifyFiles(
+        allocation, isCheckpointAllowed: allocation.cleanupPolicy != nil || isManual)
+      if allocation.cleanupPolicy == nil && !isManual {
         let head = try git(allocation.path, ["rev-parse", "HEAD"])
         let refs = try git(
           allocation.repository,
@@ -247,7 +266,7 @@ func cleanupPreview(
   let estimatedBytes =
     reasons.isEmpty && (!isGracePending || isFileVerificationRequired)
     ? measure(allocation.path).privateBytes : 0
-  if reasons.isEmpty, allocation.cleanupPolicy != nil {
+  if reasons.isEmpty, allocation.cleanupPolicy != nil && !isManual {
     if eligibleAt != nil {
       if isGracePending { reasons.append("Eligible after grace period") }
     } else if cleanupGrace(allocation) > 0 {
@@ -259,15 +278,18 @@ func cleanupPreview(
     estimatedBytes: estimatedBytes)
 }
 
-func cleanup(_ allocation: inout Allocation, store: RegistryStore, event: String = "owner-release")
-  throws
-{
+func cleanup(
+  _ allocation: inout Allocation, store: RegistryStore, event: String = "owner-release",
+  minimumIdle: TimeInterval? = nil, transcriptDirectory: String? = nil
+) throws {
   if allocation.phase == .removed { return }
   if allocation.isRemovalPending {
     try reconcileRemoval(&allocation, store: store)
     return
   }
-  let preview = cleanupPreview(allocation, isFileVerificationRequired: event != "sweep")
+  let isManual = event == "manual-cleanup"
+  let preview = cleanupPreview(
+    allocation, isFileVerificationRequired: event != "sweep", isManual: isManual)
   let blockers = preview.reasons.filter {
     $0 != "Awaiting grace period" && $0 != "Eligible after grace period"
   }
@@ -282,7 +304,7 @@ func cleanup(_ allocation: inout Allocation, store: RegistryStore, event: String
     return
   }
   if allocation.eligibleSince == nil { allocation.eligibleSince = Date() }
-  if allocation.cleanupPolicy != nil,
+  if !isManual && allocation.cleanupPolicy != nil,
     allocation.eligibleSince!.addingTimeInterval(cleanupGrace(allocation)) > Date()
   {
     allocation.phase = .retained
@@ -294,19 +316,40 @@ func cleanup(_ allocation: inout Allocation, store: RegistryStore, event: String
   allocation.phase = .checking
   try store.save(allocation)
   do {
-    let isOffload = allocation.cleanupPolicy != nil
+    let isOffload = allocation.cleanupPolicy != nil || isManual
     _ = try verifyFiles(allocation, isCheckpointAllowed: isOffload)
-    let offload = try isOffload ? pushOffload(allocation) : nil
+    if isManual {
+      guard let recovery = allocation.recovery,
+        recovery.event == "manual-offload-local" || recovery.event == "manual-offload-remote"
+          || recovery.event == "manual-cleanup"
+      else { throw WorkscopeError("Offload this checkout before manual cleanup") }
+      try verifyRecovery(allocation)
+      let head = try git(allocation.path, ["rev-parse", "HEAD"])
+      let tree = try git(allocation.path, ["rev-parse", recovery.commit + "^{tree}"])
+      try require(
+        head == recovery.commit && git(allocation.path, ["write-tree"]) == tree
+          && checkpointTree(allocation.path) == tree,
+        "Checkout changed after offload; offload again before cleanup")
+    }
+    let offload = try isOffload && !isManual ? pushOffload(allocation) : nil
     let head =
       try offload?.commit
       ?? git(allocation.path, ["rev-parse", "--verify", "HEAD^{commit}"])
-    let reference = "refs/workfree/recovery/" + allocation.id + "/" + UUID().uuidString.lowercased()
-    _ = try git(
-      allocation.repository, ["-c", "core.fsync=reference", "update-ref", reference, head, ""])
-    allocation.recovery = RecoveryRecord(
-      commit: head, reference: reference,
-      branch: try? git(allocation.path, ["symbolic-ref", "--short", "HEAD"]), preservedAt: Date(),
-      event: event)
+    if isManual, let checkpoint = allocation.recovery {
+      allocation.recovery = RecoveryRecord(
+        commit: checkpoint.commit, reference: checkpoint.reference, branch: checkpoint.branch,
+        preservedAt: checkpoint.preservedAt, event: event,
+        lastFileActivity: checkpoint.lastFileActivity)
+    } else {
+      let reference =
+        "refs/workfree/recovery/" + allocation.id + "/" + UUID().uuidString.lowercased()
+      _ = try git(
+        allocation.repository, ["-c", "core.fsync=reference", "update-ref", reference, head, ""])
+      allocation.recovery = RecoveryRecord(
+        commit: head, reference: reference,
+        branch: try? git(allocation.path, ["symbolic-ref", "--short", "HEAD"]),
+        preservedAt: Date(), event: event, lastFileActivity: nil)
+    }
     try verifyRecovery(allocation)
     let bytes = measure(allocation.path).privateBytes
     let targets = try verifyFiles(allocation, isCheckpointAllowed: isOffload)
@@ -320,6 +363,15 @@ func cleanup(_ allocation: inout Allocation, store: RegistryStore, event: String
     } else {
       try require(
         try git(allocation.path, ["rev-parse", "HEAD"]) == head, "HEAD changed during cleanup")
+    }
+    if isManual {
+      guard let minimumIdle, let transcriptDirectory else {
+        throw WorkscopeError("Manual cleanup requires an idle age and transcript directory")
+      }
+      let current = try oneOffPreviews(
+        [allocation], minimumIdle: minimumIdle, transcriptDirectory: transcriptDirectory,
+        isCheckpointRequired: true)[0]
+      try require(current.isEligible, current.reasons.joined(separator: "; "))
     }
     allocation.phase = .removing
     allocation.isRemovalPending = true
@@ -367,10 +419,13 @@ func completeRemoval(_ allocation: inout Allocation) throws {
 
 func reconcileRemoval(_ allocation: inout Allocation, store: RegistryStore) throws {
   do {
+    let isManual = allocation.recovery?.event == "manual-cleanup"
     try require(
-      allocation.isCleanupAuthorized || allocation.cleanupPolicy != nil, "Cleanup is not authorized"
-    )
-    try require(ownershipReasons(allocation).isEmpty, "Active owners prevent recovery")
+      allocation.isCleanupAuthorized || allocation.cleanupPolicy != nil || isManual,
+      "Cleanup is not authorized")
+    try require(
+      ownershipReasons(allocation, isManual: isManual).isEmpty,
+      "Active owners prevent recovery")
     if try !isPresent(allocation.path) {
       try require(
         try !isRegistered(allocation.repository, allocation.path), "Removal left a registration")
@@ -397,6 +452,12 @@ func reconcileRemoval(_ allocation: inout Allocation, store: RegistryStore) thro
       try verifyIdentity(allocation)
       allocation.isRemovalPending = false
       allocation.phase = .retained
+      if isManual {
+        allocation.reason = "Manual cleanup interrupted; run cleanup-now after checking idle age"
+        recordAttempt(&allocation, event: "recovery", reasons: [allocation.reason!])
+        try store.save(allocation)
+        return
+      }
       try store.save(allocation)
       try cleanup(&allocation, store: store, event: "recovery")
       return
