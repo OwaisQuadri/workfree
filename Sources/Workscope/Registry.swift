@@ -297,6 +297,9 @@ public struct Registry: Sendable {
             preservedAt: Date(), event: isRemote ? "manual-offload-remote" : "manual-offload-local",
             lastFileActivity: activity)
           try verifyRecovery(allocation)
+          allocation.offloadCleanup = OffloadCleanup(
+            minimumIdle: minimumIdle, transcriptDirectory: transcriptDirectory,
+            nextCheckAt: nil)
           try store.save(allocation)
           try require(
             try git(allocation.path, ["rev-parse", "HEAD"]) == offload.source
@@ -308,6 +311,11 @@ public struct Registry: Sendable {
           allocation.phase = .retained
           allocation.reason = nil
           recordAttempt(&allocation, event: allocation.recovery!.event, reasons: [])
+          try store.save(allocation)
+          try cleanup(
+            &allocation, store: store, event: "manual-cleanup", minimumIdle: minimumIdle,
+            transcriptDirectory: transcriptDirectory,
+            transcriptModifiedSince: transcriptScanStarted)
         } catch {
           allocation.phase = .blocked
           allocation.reason = String(describing: error)
@@ -324,13 +332,23 @@ public struct Registry: Sendable {
     id: String? = nil, repository: String? = nil, minimumIdle: TimeInterval,
     transcriptDirectory: String
   ) throws -> [Allocation] {
-    try withRegistry(stateDirectory) { store in
+    try require(minimumIdle >= 0 && minimumIdle.isFinite, "Invalid minimum idle age")
+    return try withRegistry(stateDirectory) { store in
       let source = try repository.map(canonical)
       let allocations = try id.map { [try store.allocation($0)] } ?? store.allocations()
       let transcriptScanStarted = Date().addingTimeInterval(-1)
+      let scoped = allocations.filter { source == nil || $0.repository == source }
+      for var allocation in scoped
+      where allocation.recovery?.event.hasPrefix("manual-offload-") == true
+        && allocation.offloadCleanup == nil
+      {
+        allocation.offloadCleanup = OffloadCleanup(
+          minimumIdle: minimumIdle, transcriptDirectory: transcriptDirectory,
+          nextCheckAt: nil)
+        try store.save(allocation)
+      }
       let candidates = try oneOffPreviews(
-        allocations.filter { source == nil || $0.repository == source },
-        minimumIdle: minimumIdle, transcriptDirectory: transcriptDirectory,
+        scoped, minimumIdle: minimumIdle, transcriptDirectory: transcriptDirectory,
         isCheckpointRequired: true)
       var results: [Allocation] = []
       for preview in candidates where preview.isEligible {
@@ -354,10 +372,46 @@ public struct Registry: Sendable {
         }
         guard allocation.phase != .removed,
           allocation.cleanupPolicy != nil || allocation.isCleanupAuthorized
+            || allocation.offloadCleanup != nil
             || (allocation.isRemovalPending && allocation.recovery?.event == "manual-cleanup")
         else { continue }
         if allocation.isRemovalPending {
           try reconcileRemoval(&allocation, store: store)
+        } else if let policy = allocation.offloadCleanup {
+          let blockers = ownershipReasons(allocation, isManual: true)
+          if !blockers.isEmpty {
+            allocation.phase = .retained
+            allocation.reason = blockers.joined(separator: "; ")
+            try store.save(allocation)
+          } else if policy.nextCheckAt == nil || policy.nextCheckAt! <= Date() {
+            let scanStarted = Date().addingTimeInterval(-1)
+            let preview: OneOffPreview
+            do {
+              preview = try oneOffPreviews(
+                [allocation], minimumIdle: policy.minimumIdle,
+                transcriptDirectory: policy.transcriptDirectory,
+                isCheckpointRequired: true)[0]
+            } catch {
+              allocation.phase = .retained
+              allocation.reason = String(describing: error)
+              try store.save(allocation)
+              results.append(allocation)
+              continue
+            }
+            if preview.isEligible {
+              try cleanup(
+                &allocation, store: store, event: "manual-cleanup",
+                minimumIdle: policy.minimumIdle,
+                transcriptDirectory: policy.transcriptDirectory,
+                transcriptModifiedSince: scanStarted)
+            } else {
+              allocation.offloadCleanup?.nextCheckAt =
+                preview.eligibleAt > Date() ? preview.eligibleAt : nil
+              allocation.phase = .retained
+              allocation.reason = preview.reasons.joined(separator: "; ")
+              try store.save(allocation)
+            }
+          }
         } else {
           try cleanup(&allocation, store: store, event: "sweep")
         }

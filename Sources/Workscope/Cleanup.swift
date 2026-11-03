@@ -128,14 +128,25 @@ func recordAttempt(_ allocation: inout Allocation, event: String, reasons: [Stri
 
 func ownershipReasons(_ allocation: Allocation, isManual: Bool = false) -> [String] {
   var reasons = conversationReasons(allocation)
-  if !isManual && !allocation.isCleanupAuthorized && allocation.cleanupPolicy == nil {
+  if !isManual && allocation.offloadCleanup != nil {
+    reasons.append("Offloaded checkpoint requires idle-checked cleanup")
+  }
+  if !isManual && !allocation.isCleanupAuthorized && allocation.cleanupPolicy == nil
+    && allocation.offloadCleanup == nil
+  {
     reasons.append("Cleanup is not authorized")
   }
-  if !isManual && allocation.recovery?.event.hasPrefix("manual-") == true {
+  if !isManual && allocation.recovery?.event.hasPrefix("manual-") == true
+    && allocation.offloadCleanup == nil
+  {
     reasons.append("Awaiting manual cleanup")
   }
   for (token, owner) in allocation.owners.sorted(by: { $0.key < $1.key }) {
-    if owner.kind == .task && (allocation.cleanupPolicy != nil || isManual) { continue }
+    if owner.kind == .task
+      && (allocation.cleanupPolicy != nil || allocation.offloadCleanup != nil || isManual)
+    {
+      continue
+    }
     reasons.append("Retained \(owner.kind.rawValue) owner: \(token)")
   }
   if allocation.retiredOwners.values.contains(where: {
@@ -253,8 +264,10 @@ func cleanupPreview(
   if isFileVerificationRequired || (reasons.isEmpty && !isGracePending) {
     do {
       _ = try verifyFiles(
-        allocation, isCheckpointAllowed: allocation.cleanupPolicy != nil || isManual)
-      if allocation.cleanupPolicy == nil && !isManual {
+        allocation,
+        isCheckpointAllowed: allocation.cleanupPolicy != nil || allocation.offloadCleanup != nil
+          || isManual)
+      if allocation.cleanupPolicy == nil && allocation.offloadCleanup == nil && !isManual {
         let head = try git(allocation.path, ["rev-parse", "HEAD"])
         let refs = try git(
           allocation.repository,
@@ -415,6 +428,7 @@ func completeRemoval(_ allocation: inout Allocation) throws {
   allocation.isRemovalPending = false
   allocation.reason = nil
   allocation.eligibleSince = nil
+  allocation.offloadCleanup = nil
   allocation.removedAt = Date()
 }
 
@@ -422,7 +436,8 @@ func reconcileRemoval(_ allocation: inout Allocation, store: RegistryStore) thro
   do {
     let isManual = allocation.recovery?.event == "manual-cleanup"
     try require(
-      allocation.isCleanupAuthorized || allocation.cleanupPolicy != nil || isManual,
+      allocation.isCleanupAuthorized || allocation.cleanupPolicy != nil
+        || allocation.offloadCleanup != nil || isManual,
       "Cleanup is not authorized")
     try require(
       ownershipReasons(allocation, isManual: isManual).isEmpty,
@@ -454,7 +469,10 @@ func reconcileRemoval(_ allocation: inout Allocation, store: RegistryStore) thro
       allocation.isRemovalPending = false
       allocation.phase = .retained
       if isManual {
-        allocation.reason = "Manual cleanup interrupted; run cleanup-now after checking idle age"
+        allocation.reason =
+          allocation.offloadCleanup == nil
+          ? "Manual cleanup interrupted; run cleanup-now after checking idle age"
+          : "Manual cleanup interrupted; the next sweep retries after idle and safety checks"
         recordAttempt(&allocation, event: "recovery", reasons: [allocation.reason!])
         try store.save(allocation)
         return

@@ -122,6 +122,10 @@ func transcriptMentions(
   maximumRecordBytes: Int = 64 * 1_024 * 1_024
 ) throws -> [String: Date] {
   guard !allocations.isEmpty else { return [:] }
+  var isDirectory: ObjCBool = false
+  guard FileManager.default.fileExists(atPath: directory, isDirectory: &isDirectory),
+    isDirectory.boolValue, FileManager.default.isReadableFile(atPath: directory)
+  else { throw WorkscopeError("Cannot inspect conversation transcripts") }
   let root = URL(fileURLWithPath: directory)
   var enumerationError: Error?
   guard
