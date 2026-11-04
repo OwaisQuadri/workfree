@@ -319,6 +319,8 @@ public struct Registry: Sendable {
           allocation.offloadCleanup = OffloadCleanup(
             minimumIdle: minimumIdle, transcriptDirectory: transcriptDirectory,
             nextCheckAt: nil)
+          let retiringClaims = allocation.conversationClaims
+          allocation.conversationClaims = originalClaims
           try store.save(allocation)
           try require(
             try git(allocation.path, ["rev-parse", "HEAD"]) == offload.source
@@ -327,6 +329,7 @@ public struct Registry: Sendable {
                 == git(allocation.repository, ["rev-parse", offload.commit + "^{tree}"]),
             "Checkout changed during offload")
           try advanceCheckout(allocation, offload: offload)
+          allocation.conversationClaims = retiringClaims
           allocation.phase = .retained
           allocation.reason = nil
           recordAttempt(&allocation, event: allocation.recovery!.event, reasons: [])
@@ -335,8 +338,9 @@ public struct Registry: Sendable {
             &allocation, store: store, event: "manual-cleanup", minimumIdle: minimumIdle,
             transcriptDirectory: transcriptDirectory,
             transcriptModifiedSince: transcriptScanStarted)
+          if allocation.phase != .removed { allocation.conversationClaims = originalClaims }
         } catch {
-          if allocation.recovery == nil { allocation.conversationClaims = originalClaims }
+          allocation.conversationClaims = originalClaims
           allocation.phase = .blocked
           allocation.reason = String(describing: error)
           recordAttempt(&allocation, event: "manual-offload", reasons: [allocation.reason!])
@@ -384,14 +388,20 @@ public struct Registry: Sendable {
       var results: [Allocation] = []
       for preview in candidates where preview.isEligible {
         var allocation = try store.allocation(preview.id)
+        let originalClaims = allocation.conversationClaims
         if let retiring {
-          allocation.conversationClaims = allocation.conversationClaims?.filter {
+          try verifyRecovery(allocation)
+          allocation.conversationClaims = originalClaims?.filter {
             $0.sessionID != retiring.sessionID
           }
         }
         try cleanup(
           &allocation, store: store, event: "manual-cleanup", minimumIdle: minimumIdle,
           transcriptDirectory: transcriptDirectory, transcriptModifiedSince: transcriptScanStarted)
+        if retiring != nil && allocation.phase != .removed {
+          allocation.conversationClaims = originalClaims
+          try store.save(allocation)
+        }
         results.append(allocation)
       }
       return results

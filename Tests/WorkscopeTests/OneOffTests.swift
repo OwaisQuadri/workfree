@@ -73,6 +73,48 @@ final class OneOffTests: XCTestCase {
     XCTAssertEqual(try git(allocation.path, ["status", "--porcelain"]), "")
   }
 
+  func testPostCheckpointChangePreservesConversationClaim() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.registry.start(
+      branch: UUID().uuidString, repository: fixture.repository, provider: .git)
+    let conversation = try Registry(
+      stateDirectory: fixture.registry.stateDirectory,
+      conversation: ConversationContext(
+        sessionID: "checkpoint-failure", processID: getpid(),
+        allocationIDs: [allocation.id], cwd: fixture.repository))
+    _ = try conversation.claim(allocation.id)
+    let old = Date().addingTimeInterval(-48 * 3_600)
+    for path in ["", "tracked", ".gitignore"] {
+      try FileManager.default.setAttributes(
+        [.modificationDate: old], ofItemAtPath: allocation.path + "/" + path)
+    }
+    let hook = URL(
+      fileURLWithPath: try git(fixture.repository, ["rev-parse", "--git-path", "hooks/pre-push"]),
+      relativeTo: URL(fileURLWithPath: fixture.repository + "/")
+    ).standardizedFileURL.path
+    let tracked = allocation.path + "/tracked"
+    let stableTimestamp = allocation.path + "/.gitignore"
+    try Data(
+      ("#!/bin/zsh\nprintf 'changed' > '" + tracked + "'\ntouch -r '"
+        + stableTimestamp + "' '" + tracked + "'\n").utf8
+    ).write(to: URL(fileURLWithPath: hook))
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: hook)
+    let result = try XCTUnwrap(
+      conversation.offload(
+        id: allocation.id, minimumIdle: 24 * 3_600, transcriptDirectory: fixture.root,
+        isRemote: true, isRetiringSessionClaims: true
+      ).first)
+    XCTAssertEqual(result.phase, .blocked)
+    XCTAssertTrue(
+      result.reason?.contains("Checkout changed during offload") == true, result.reason ?? "")
+    XCTAssertEqual(result.conversationClaims?.map(\.sessionID), ["checkpoint-failure"])
+    XCTAssertEqual(
+      try fixture.registry.inspect(allocation.id).conversationClaims?.map(\.sessionID),
+      ["checkpoint-failure"])
+    XCTAssertNotNil(result.recovery)
+    XCTAssertEqual(try String(contentsOfFile: tracked, encoding: .utf8), "changed")
+  }
+
   func testClaimRetirementPreservesOtherConversationsAndCurrentCheckout() throws {
     let fixture = try Fixture()
     let allocation = try fixture.registry.start(
@@ -800,6 +842,43 @@ final class OneOffTests: XCTestCase {
     XCTAssertEqual(result.phase, .removed, result.reason ?? "")
     XCTAssertTrue(result.conversationClaims?.isEmpty ?? true)
     XCTAssertFalse(FileManager.default.fileExists(atPath: allocation.path))
+  }
+
+  func testMissingCheckpointReferencePreservesConversationClaim() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.registry.start(
+      branch: UUID().uuidString, repository: fixture.repository, provider: .git)
+    _ = try fixture.registry.offload(
+      id: allocation.id, minimumIdle: 0, transcriptDirectory: fixture.root, isRemote: false)
+    _ = try fixture.registry.restore(allocation.id)
+    let recovery = try XCTUnwrap(fixture.registry.inspect(allocation.id).recovery)
+    try withRegistry(fixture.registry.stateDirectory) { store in
+      var pending = try store.allocation(allocation.id)
+      pending.recovery = RecoveryRecord(
+        commit: recovery.commit, reference: recovery.reference, branch: recovery.branch,
+        preservedAt: recovery.preservedAt, event: "manual-offload-local",
+        lastFileActivity: Date().addingTimeInterval(-48 * 3_600))
+      try store.save(pending)
+    }
+    let conversation = try Registry(
+      stateDirectory: fixture.registry.stateDirectory,
+      conversation: ConversationContext(
+        sessionID: "missing-reference", processID: getpid(),
+        allocationIDs: [allocation.id], cwd: fixture.repository))
+    _ = try conversation.claim(allocation.id)
+    let old = Date().addingTimeInterval(-48 * 3_600)
+    for path in ["", "tracked", ".gitignore"] {
+      try FileManager.default.setAttributes(
+        [.modificationDate: old], ofItemAtPath: allocation.path + "/" + path)
+    }
+    _ = try git(fixture.repository, ["update-ref", "-d", recovery.reference])
+    XCTAssertThrowsError(
+      try conversation.oneOffCleanup(
+        id: allocation.id, minimumIdle: 24 * 3_600,
+        transcriptDirectory: fixture.root, isRetiringSessionClaims: true))
+    let retained = try fixture.registry.inspect(allocation.id)
+    XCTAssertEqual(retained.conversationClaims?.map(\.sessionID), ["missing-reference"])
+    XCTAssertTrue(FileManager.default.fileExists(atPath: allocation.path))
   }
 
   func testInterruptedManualCleanupResumesAfterIdle() throws {
