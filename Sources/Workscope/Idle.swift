@@ -239,7 +239,8 @@ func transcriptMentions(
 func oneOffPreviews(
   _ allocations: [Allocation], minimumIdle: TimeInterval, transcriptDirectory: String,
   isCheckpointRequired: Bool = false, modifiedSince: Date? = nil, now: Date = Date(),
-  retiringClaim: ConversationClaim? = nil
+  retiringClaim: ConversationClaim? = nil,
+  additionalReasons: (Allocation) -> [String] = { _ in [] }
 ) throws -> [OneOffPreview] {
   try require(minimumIdle >= 0 && minimumIdle.isFinite, "Invalid minimum idle age")
   func preview(_ allocation: Allocation, mention: Date?) throws -> OneOffPreview {
@@ -248,7 +249,7 @@ func oneOffPreviews(
     if let retiringClaim {
       examined.conversationClaims = allocation.conversationClaims?.filter { $0 != retiringClaim }
     }
-    var reasons = ownershipReasons(examined, isManual: true)
+    var reasons = ownershipReasons(examined, isManual: true) + additionalReasons(allocation)
     if allocation.phase == .creating || allocation.phase == .failed || allocation.phase == .removed
     {
       reasons.append("Allocation is not an active checkout")

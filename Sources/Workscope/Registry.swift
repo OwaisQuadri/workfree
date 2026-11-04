@@ -260,7 +260,20 @@ public struct Registry: Sendable {
           (source == nil || $0.repository == source) && $0.id != excludingID
         },
         minimumIdle: minimumIdle, transcriptDirectory: transcriptDirectory,
-        retiringClaim: retiring?.claim)
+        retiringClaim: retiring?.claim,
+        additionalReasons: { allocation in
+          guard let retiring else { return [] }
+          var reasons: [String] = []
+          if isWithin(retiring.cwd, allocation.path) {
+            reasons.append("Cannot retire a claim for the current checkout")
+          }
+          if let recovery = allocation.recovery,
+            !recovery.event.hasPrefix("manual-offload-")
+          {
+            reasons.append("Recovery checkpoint requires cleanup-now, not offload")
+          }
+          return reasons
+        })
     }
   }
 

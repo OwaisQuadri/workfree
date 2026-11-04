@@ -187,6 +187,13 @@ final class OneOffTests: XCTestCase {
       stateDirectory: fixture.registry.stateDirectory,
       conversation: ConversationContext(
         sessionID: "inside", processID: getpid(), cwd: allocation.path))
+    let preview = try XCTUnwrap(
+      inside.oneOffPreview(
+        id: allocation.id, minimumIdle: 24 * 3_600, transcriptDirectory: fixture.root,
+        isRetiringSessionClaims: true
+      ).first)
+    XCTAssertTrue(preview.reasons.contains("Cannot retire a claim for the current checkout"))
+    XCTAssertFalse(preview.isEligible)
     XCTAssertThrowsError(
       try inside.offload(
         id: allocation.id, minimumIdle: 24 * 3_600, transcriptDirectory: fixture.root,
@@ -949,6 +956,45 @@ final class OneOffTests: XCTestCase {
     XCTAssertEqual(result.phase, .removed, result.reason ?? "")
     XCTAssertTrue(result.conversationClaims?.isEmpty ?? true)
     XCTAssertFalse(FileManager.default.fileExists(atPath: allocation.path))
+  }
+
+  func testRetiringOffloadPreviewRejectsRestoredManualCleanupCheckpoint() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.registry.start(
+      branch: UUID().uuidString, repository: fixture.repository, provider: .git)
+    _ = try fixture.registry.offload(
+      id: allocation.id, minimumIdle: 0, transcriptDirectory: fixture.root, isRemote: false)
+    _ = try fixture.registry.restore(allocation.id)
+    try withRegistry(fixture.registry.stateDirectory) { store in
+      var restored = try store.allocation(allocation.id)
+      let recovery = try XCTUnwrap(restored.recovery)
+      restored.recovery = RecoveryRecord(
+        commit: recovery.commit, reference: recovery.reference, branch: recovery.branch,
+        preservedAt: recovery.preservedAt, event: "manual-cleanup",
+        lastFileActivity: Date().addingTimeInterval(-48 * 3_600))
+      try store.save(restored)
+    }
+    let conversation = try Registry(
+      stateDirectory: fixture.registry.stateDirectory,
+      conversation: ConversationContext(
+        sessionID: "restored", processID: getpid(), cwd: fixture.repository))
+    let old = Date().addingTimeInterval(-48 * 3_600)
+    for path in ["", "tracked", ".gitignore"] {
+      try FileManager.default.setAttributes(
+        [.modificationDate: old], ofItemAtPath: allocation.path + "/" + path)
+    }
+    let preview = try XCTUnwrap(
+      conversation.oneOffPreview(
+        id: allocation.id, minimumIdle: 24 * 3_600, transcriptDirectory: fixture.root,
+        isRetiringSessionClaims: true
+      ).first)
+    XCTAssertTrue(preview.reasons.contains("Recovery checkpoint requires cleanup-now, not offload"))
+    XCTAssertFalse(preview.isEligible)
+    XCTAssertTrue(
+      try conversation.offload(
+        id: allocation.id, minimumIdle: 24 * 3_600, transcriptDirectory: fixture.root,
+        isRemote: false, isRetiringSessionClaims: true
+      ).isEmpty)
   }
 
   func testMissingCheckpointReferenceBlocksOnlyThatAllocation() throws {
