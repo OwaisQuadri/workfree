@@ -73,6 +73,42 @@ final class OneOffTests: XCTestCase {
     XCTAssertEqual(try git(allocation.path, ["status", "--porcelain"]), "")
   }
 
+  func testInspectAndSessionReloadDoNotReclaimRemovedOffload() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.registry.start(
+      branch: UUID().uuidString, repository: fixture.repository, provider: .git)
+    let context = try ConversationContext(
+      sessionID: "inspect-after-offload", processID: getpid(),
+      allocationIDs: [allocation.id], cwd: fixture.repository)
+    let conversation = try Registry(
+      stateDirectory: fixture.registry.stateDirectory, conversation: context)
+    _ = try conversation.claim(allocation.id)
+    let old = Date().addingTimeInterval(-48 * 3_600)
+    for path in ["", "tracked", ".gitignore"] {
+      try FileManager.default.setAttributes(
+        [.modificationDate: old], ofItemAtPath: allocation.path + "/" + path)
+    }
+    let result = try XCTUnwrap(
+      conversation.offload(
+        id: allocation.id, minimumIdle: 24 * 3_600, transcriptDirectory: fixture.root,
+        isRemote: false, isRetiringSessionClaims: true
+      ).first)
+    XCTAssertEqual(result.phase, .removed, result.reason ?? "")
+    XCTAssertTrue(result.conversationClaims?.isEmpty ?? true)
+    XCTAssertEqual(
+      fixture.wait(
+        try fixture.cli([
+          "--session-id", "inspect-after-offload", "--session-pid", String(getpid()),
+          "--session-cwd", fixture.repository, "inspect", allocation.id,
+        ])), 0)
+    let reloaded = try Registry(
+      stateDirectory: fixture.registry.stateDirectory, conversation: context)
+    _ = try reloaded.sweep()
+    let inspected = try fixture.registry.inspect(allocation.id)
+    XCTAssertEqual(inspected.phase, .removed)
+    XCTAssertTrue(inspected.conversationClaims?.isEmpty ?? true)
+  }
+
   func testPostCheckpointChangePreservesConversationClaim() throws {
     let fixture = try Fixture()
     let allocation = try fixture.registry.start(

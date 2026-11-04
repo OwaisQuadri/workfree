@@ -98,7 +98,7 @@ func withConversationRegistry<T>(
         if isCwd {
           try acquireConversation(&allocation, conversation)
           try store.save(allocation)
-        } else if ids.contains(allocation.id) {
+        } else if ids.contains(allocation.id) && allocation.phase != .removed {
           retainConversation(&allocation, conversation)
           try store.save(allocation)
         }
