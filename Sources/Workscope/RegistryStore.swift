@@ -95,6 +95,15 @@ final class RegistryStore {
     try transaction { try saveAllocation(allocation, isNew: isNew) }
   }
 
+  func removeMissing(_ allocation: Allocation) throws {
+    try transaction {
+      try execute(
+        "DELETE FROM allocations WHERE id=? AND path=?", [allocation.id, allocation.path])
+      try require(sqlite3_changes(database) == 1, "Allocation identity changed")
+      try execute("DELETE FROM allocation_usage WHERE id=?", [allocation.id])
+    }
+  }
+
   func saveRepairedIdentity(_ allocation: Allocation) throws {
     try transaction {
       let stable = try repositoryIdentity(allocation.repository)

@@ -99,9 +99,9 @@ Enable defaults to a 60-second grace period and accepts `--grace-seconds`. It gr
 
 Standing enable and revoke are not model tool actions. The legacy `isCleanupAllowed` start input now requires already-recorded standing authority and fails with operator setup guidance if none exists. It never sends `--allow-cleanup`. The model's `authorize-cleanup` request always fails with instructions for operator CLI setup rather than opening a dialog or granting permission. For an intentionally named existing allocation, the operator can use `wf authorize-cleanup <allocation-id>` directly. Disposable paths require that explicit allocation grant. `wf revoke-cleanup <allocation-id>` clears both the grant and its inherited provenance. Sweep and restore never re-enroll it.
 
-The tool exposes `revoke-cleanup`, `preview`, `sweep`, and `restore`.
+The tool exposes `revoke-cleanup`, `preview`, `sweep`, `offload`, `cleanup-now`, and `restore`.
 Task owners can survive eviction under that policy.
-Execution, workspace, and pin owners still block removal. Live or uncertain conversation claims also block removal.
+Execution, workspace, and pin owners still block removal. Live or uncertain conversation claims also block removal during automatic sweeps. An explicit CLI offload with a positive idle age and `--retire-session-claims` can retire only the invoking conversation's claim, after a valid checkpoint and successful removal. Other claims and the current checkout remain protected. The adapter exposes `offload` and `cleanup-now` with `minimumIdle` and `isRetiringSessionClaims`. `offload` also requires a `checkpoint`. The separate `offload-preview` command is available only in the operator CLI. The operator-only `wf remove-missing ID` command removes a record for an absent checkout only if no checkpoint, owner, claim, or pending removal remains. Workfree keeps other missing-checkout records so recovery and active-use protections remain available.
 The adapter sweeps recorded grants at session startup and every 60 seconds.
 Session shutdown stops the timer without releasing owners. Startup and timer sweeps never request permission or display cleanup authorization dialogs.
 No scheduler is installed outside Pi.

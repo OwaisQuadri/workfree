@@ -141,4 +141,38 @@ final class OwnershipTests: XCTestCase {
       try fixture.registry.start(
         branch: "retry", repository: fixture.repository, path: allocations[0].path))
   }
+
+  func testRemoveMissingRequiresAbsentCheckoutAndRetainsOwnerTokenReservation() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.start("orphan", isAuthorized: false)
+    XCTAssertThrowsError(try fixture.registry.removeMissing(allocation.id))
+    _ = try fixture.registry.release(allocation.id, owner: "task:\(allocation.id)")
+    XCTAssertThrowsError(try fixture.registry.removeMissing(allocation.id))
+    try FileManager.default.removeItem(atPath: allocation.path)
+    XCTAssertEqual(try fixture.registry.removeMissing(allocation.id).id, allocation.id)
+    XCTAssertThrowsError(try fixture.registry.inspect(allocation.id))
+    XCTAssertTrue(try fixture.registry.list().isEmpty)
+    let other = try fixture.start("replacement")
+    XCTAssertThrowsError(
+      try fixture.registry.retain(other.id, owner: "task:\(allocation.id)", kind: .task))
+  }
+
+  func testRemoveMissingKeepsRecoveryAndConversationClaims() throws {
+    let fixture = try Fixture()
+    let saved = try fixture.start("saved")
+    _ = try fixture.registry.release(saved.id, owner: "task:\(saved.id)")
+    XCTAssertNotNil(try fixture.registry.inspect(saved.id).recovery)
+    XCTAssertThrowsError(try fixture.registry.removeMissing(saved.id))
+
+    let claimed = try fixture.start("claimed", isAuthorized: false)
+    let context = try ConversationContext(
+      sessionID: "reader", processID: getpid(), allocationIDs: [claimed.id])
+    let conversation = try Registry(
+      stateDirectory: fixture.registry.stateDirectory, conversation: context)
+    _ = try conversation.claim(claimed.id)
+    _ = try fixture.registry.release(claimed.id, owner: "task:\(claimed.id)")
+    try FileManager.default.removeItem(atPath: claimed.path)
+    XCTAssertThrowsError(try fixture.registry.removeMissing(claimed.id))
+    XCTAssertNotNil(try fixture.registry.inspect(claimed.id).conversationClaims)
+  }
 }

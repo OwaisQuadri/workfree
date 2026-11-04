@@ -246,33 +246,72 @@ public struct Registry: Sendable {
 
   public func oneOffPreview(
     id: String? = nil, repository: String? = nil, minimumIdle: TimeInterval,
-    transcriptDirectory: String
+    transcriptDirectory: String, isRetiringSessionClaims: Bool = false,
+    excludingID: String? = nil
   ) throws -> [OneOffPreview] {
-    try withRegistry(stateDirectory) { store in
+    try require(
+      !isRetiringSessionClaims || minimumIdle > 0, "Claim retirement requires an idle age")
+    let retiring = isRetiringSessionClaims ? try requireConversationOutsideCheckouts() : nil
+    return try withRegistry(stateDirectory) { store in
       let source = try repository.map(canonical)
       let allocations = try id.map { [try store.allocation($0)] } ?? store.allocations()
       return try oneOffPreviews(
-        allocations.filter { source == nil || $0.repository == source },
-        minimumIdle: minimumIdle, transcriptDirectory: transcriptDirectory)
+        allocations.filter {
+          (source == nil || $0.repository == source) && $0.id != excludingID
+        },
+        minimumIdle: minimumIdle, transcriptDirectory: transcriptDirectory,
+        retiringClaim: retiring?.claim,
+        additionalReasons: { allocation in
+          guard let retiring else { return [] }
+          var reasons: [String] = []
+          if isWithin(retiring.cwd, allocation.path) {
+            reasons.append("Cannot retire a claim for the current checkout")
+          }
+          if let recovery = allocation.recovery,
+            !recovery.event.hasPrefix("manual-offload-")
+          {
+            reasons.append("Recovery checkpoint requires cleanup-now, not offload")
+          }
+          return reasons
+        })
     }
   }
 
   public func offload(
     id: String? = nil, repository: String? = nil, minimumIdle: TimeInterval,
-    transcriptDirectory: String, isRemote: Bool
+    transcriptDirectory: String, isRemote: Bool, isRetiringSessionClaims: Bool = false,
+    excludingID: String? = nil
   ) throws -> [Allocation] {
-    try withRegistry(stateDirectory) { store in
+    try require(
+      !isRetiringSessionClaims || minimumIdle > 0, "Claim retirement requires an idle age")
+    let retiring = isRetiringSessionClaims ? try requireConversationOutsideCheckouts() : nil
+    return try withRegistry(stateDirectory) { store in
       let source = try repository.map(canonical)
       let allocations = try id.map { [try store.allocation($0)] } ?? store.allocations()
+      let scoped = allocations.filter {
+        (source == nil || $0.repository == source) && $0.id != excludingID
+          && (!isRetiringSessionClaims || $0.recovery == nil
+            || $0.recovery?.event.hasPrefix("manual-offload-") == true)
+      }
+      if let retiring {
+        try require(
+          !scoped.contains { isWithin(retiring.cwd, $0.path) },
+          "Cannot retire a claim for the current checkout")
+      }
       let transcriptScanStarted = Date().addingTimeInterval(-1)
       let candidates = try oneOffPreviews(
-        allocations.filter { source == nil || $0.repository == source },
-        minimumIdle: minimumIdle, transcriptDirectory: transcriptDirectory)
+        scoped, minimumIdle: minimumIdle, transcriptDirectory: transcriptDirectory,
+        retiringClaim: retiring?.claim)
       var results: [Allocation] = []
       for preview in candidates where preview.isEligible {
         var allocation = try store.allocation(preview.id)
+        let originalClaims = allocation.conversationClaims
+        if let retiring {
+          allocation.conversationClaims = originalClaims?.filter { $0 != retiring.claim }
+        }
         do {
           try verifyIdentity(allocation)
+          if allocation.recovery != nil { try verifyRecovery(allocation) }
           try require(ownershipReasons(allocation, isManual: true).isEmpty, "Checkout is in use")
           _ = try verifyFiles(allocation, isCheckpointAllowed: true)
           let offload = try isRemote ? pushOffload(allocation) : localOffload(allocation)
@@ -300,6 +339,7 @@ public struct Registry: Sendable {
           allocation.offloadCleanup = OffloadCleanup(
             minimumIdle: minimumIdle, transcriptDirectory: transcriptDirectory,
             nextCheckAt: nil)
+          allocation.conversationClaims = originalClaims
           try store.save(allocation)
           try require(
             try git(allocation.path, ["rev-parse", "HEAD"]) == offload.source
@@ -315,8 +355,10 @@ public struct Registry: Sendable {
           try cleanup(
             &allocation, store: store, event: "manual-cleanup", minimumIdle: minimumIdle,
             transcriptDirectory: transcriptDirectory,
-            transcriptModifiedSince: transcriptScanStarted)
+            transcriptModifiedSince: transcriptScanStarted, retiringClaim: retiring?.claim)
+          if allocation.phase != .removed { allocation.conversationClaims = originalClaims }
         } catch {
+          allocation.conversationClaims = originalClaims
           allocation.phase = .blocked
           allocation.reason = String(describing: error)
           recordAttempt(&allocation, event: "manual-offload", reasons: [allocation.reason!])
@@ -330,14 +372,25 @@ public struct Registry: Sendable {
 
   public func oneOffCleanup(
     id: String? = nil, repository: String? = nil, minimumIdle: TimeInterval,
-    transcriptDirectory: String
+    transcriptDirectory: String, isRetiringSessionClaims: Bool = false,
+    excludingID: String? = nil
   ) throws -> [Allocation] {
     try require(minimumIdle >= 0 && minimumIdle.isFinite, "Invalid minimum idle age")
+    try require(
+      !isRetiringSessionClaims || minimumIdle > 0, "Claim retirement requires an idle age")
+    let retiring = isRetiringSessionClaims ? try requireConversationOutsideCheckouts() : nil
     return try withRegistry(stateDirectory) { store in
       let source = try repository.map(canonical)
       let allocations = try id.map { [try store.allocation($0)] } ?? store.allocations()
       let transcriptScanStarted = Date().addingTimeInterval(-1)
-      let scoped = allocations.filter { source == nil || $0.repository == source }
+      let scoped = allocations.filter {
+        (source == nil || $0.repository == source) && $0.id != excludingID
+      }
+      if let retiring {
+        try require(
+          !scoped.contains { isWithin(retiring.cwd, $0.path) },
+          "Cannot retire a claim for the current checkout")
+      }
       for var allocation in scoped
       where allocation.recovery?.event.hasPrefix("manual-offload-") == true
         && allocation.offloadCleanup == nil
@@ -347,15 +400,29 @@ public struct Registry: Sendable {
           nextCheckAt: nil)
         try store.save(allocation)
       }
+      var results: [Allocation] = []
+      if let retiring {
+        for var allocation in scoped where allocation.isRemovalPending {
+          if try !isPresent(allocation.path) {
+            try reconcileRemoval(&allocation, store: store, retiringClaim: retiring.claim)
+            results.append(allocation)
+          }
+        }
+      }
       let candidates = try oneOffPreviews(
         scoped, minimumIdle: minimumIdle, transcriptDirectory: transcriptDirectory,
-        isCheckpointRequired: true)
-      var results: [Allocation] = []
+        isCheckpointRequired: true, retiringClaim: retiring?.claim)
       for preview in candidates where preview.isEligible {
         var allocation = try store.allocation(preview.id)
+        let originalClaims = allocation.conversationClaims
         try cleanup(
           &allocation, store: store, event: "manual-cleanup", minimumIdle: minimumIdle,
-          transcriptDirectory: transcriptDirectory, transcriptModifiedSince: transcriptScanStarted)
+          transcriptDirectory: transcriptDirectory, transcriptModifiedSince: transcriptScanStarted,
+          retiringClaim: retiring?.claim)
+        if retiring != nil && allocation.phase != .removed {
+          allocation.conversationClaims = originalClaims
+          try store.save(allocation)
+        }
         results.append(allocation)
       }
       return results
@@ -405,8 +472,11 @@ public struct Registry: Sendable {
                 transcriptDirectory: policy.transcriptDirectory,
                 transcriptModifiedSince: scanStarted)
             } else {
-              allocation.offloadCleanup?.nextCheckAt =
-                preview.eligibleAt > Date() ? preview.eligibleAt : nil
+              if let eligibleAt = preview.eligibleAt, eligibleAt > Date() {
+                allocation.offloadCleanup?.nextCheckAt = eligibleAt
+              } else {
+                allocation.offloadCleanup?.nextCheckAt = nil
+              }
               allocation.phase = .retained
               allocation.reason = preview.reasons.joined(separator: "; ")
               try store.save(allocation)
@@ -536,6 +606,24 @@ public struct Registry: Sendable {
 
   public func inspect(_ id: String) throws -> Allocation {
     try withRegistry(stateDirectory) { try $0.allocation(id) }
+  }
+
+  public func removeMissing(_ id: String) throws -> Allocation {
+    try withRegistry(stateDirectory, excluding: id) { store in
+      let allocation = try store.allocation(id)
+      try require(try !isPresent(allocation.path), "Checkout still exists")
+      try require(
+        [.blocked, .failed, .retained, .removed].contains(allocation.phase)
+          && !allocation.isRemovalPending, "Removal or creation is in progress")
+      try require(
+        allocation.recovery == nil && allocation.offloadCleanup == nil,
+        "Recovery record must remain available")
+      try require(
+        allocation.owners.isEmpty && (allocation.conversationClaims ?? []).isEmpty,
+        "Owners or conversation claims remain")
+      try store.removeMissing(allocation)
+      return allocation
+    }
   }
 
   public func start(
@@ -805,6 +893,16 @@ public struct Registry: Sendable {
       ? process.terminationStatus : 128 + process.terminationStatus
     _ = try entryExit(id, owner: token, status: status)
     return status
+  }
+
+  private func requireConversationOutsideCheckouts() throws -> (
+    claim: ConversationClaim, cwd: String
+  ) {
+    guard let conversation, let cwd = conversation.cwd else {
+      throw WorkscopeError(
+        "Claim retirement requires a verified conversation and working directory")
+    }
+    return (conversation.claim, cwd)
   }
 
   private func retire(

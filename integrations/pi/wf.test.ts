@@ -212,6 +212,40 @@ test("acquired allocations persist outside transcript text and rebind on reload"
   await f.handlers.get("session_shutdown")({}, f.ctx);
 });
 
+test("explicit idle offload retires claims and does not rebind them on reload", async () => {
+  const f = await fixture();
+  f.result.stdout = JSON.stringify({
+    id: "stale", conversationClaims: [{ sessionID: "conversation", processID: process.pid }],
+  });
+  await f.run({ action: "inspect", id: "stale" });
+  assert.deepEqual(f.entries.at(-1).data, ["stale"]);
+  f.result.stdout = JSON.stringify([{
+    id: "stale", phase: "removed", conversationClaims: [],
+  }]);
+  await f.run({ action: "offload", id: "stale", minimumIdle: "24h", checkpoint: "local", isRetiringSessionClaims: true, excludingID: "active" });
+  assert.deepEqual(f.calls.at(-1), ["--json", "offload", "stale", "--min-idle", "24h", "--checkpoint", "local", "--retire-session-claims", "--exclude-id", "active"]);
+  assert.deepEqual(f.entries.at(-1).data, []);
+  await f.handlers.get("session_shutdown")({}, f.ctx);
+  await f.handlers.get("session_start")({}, f.ctx);
+  assert.equal(f.rawCalls.at(-2)?.[7], "[]");
+  await f.handlers.get("session_shutdown")({}, f.ctx);
+});
+
+test("one-off rejection preserves conversation claims and rejects incomplete input", async () => {
+  const f = await fixture();
+  f.result.stdout = JSON.stringify({
+    id: "stale", conversationClaims: [{ sessionID: "conversation", processID: process.pid }],
+  });
+  await f.run({ action: "inspect", id: "stale" });
+  f.result.code = 1;
+  f.result.stderr = "Not idle for the requested duration";
+  await assert.rejects(f.run({ action: "cleanup-now", id: "stale", minimumIdle: "24h", isRetiringSessionClaims: true }), /Not idle/);
+  assert.deepEqual(f.entries.at(-1).data, ["stale"]);
+  assert.throws(() => argumentsFor({ action: "offload", id: "stale", minimumIdle: "24h" }, "/repo"), /checkpoint/);
+  assert.throws(() => argumentsFor({ action: "cleanup-now", isAll: true }, "/repo"), /minimum idle/);
+  assert.throws(() => argumentsFor({ action: "list", isRetiringSessionClaims: true }, "/repo"), /One-off options/);
+});
+
 test("interrupted structured commands reconcile acquired targets before reporting failure", async () => {
   const f = await fixture();
   f.failures.push(new Error("interrupted after acquisition"));
