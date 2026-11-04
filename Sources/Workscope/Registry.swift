@@ -395,7 +395,6 @@ public struct Registry: Sendable {
       for preview in candidates where preview.isEligible {
         var allocation = try store.allocation(preview.id)
         let originalClaims = allocation.conversationClaims
-        if retiring != nil { try verifyRecovery(allocation) }
         try cleanup(
           &allocation, store: store, event: "manual-cleanup", minimumIdle: minimumIdle,
           transcriptDirectory: transcriptDirectory, transcriptModifiedSince: transcriptScanStarted,

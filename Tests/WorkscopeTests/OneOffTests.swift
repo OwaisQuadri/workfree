@@ -918,41 +918,57 @@ final class OneOffTests: XCTestCase {
     XCTAssertFalse(FileManager.default.fileExists(atPath: allocation.path))
   }
 
-  func testMissingCheckpointReferencePreservesConversationClaim() throws {
+  func testMissingCheckpointReferenceBlocksOnlyThatAllocation() throws {
     let fixture = try Fixture()
-    let allocation = try fixture.registry.start(
-      branch: UUID().uuidString, repository: fixture.repository, provider: .git)
-    _ = try fixture.registry.offload(
-      id: allocation.id, minimumIdle: 0, transcriptDirectory: fixture.root, isRemote: false)
-    _ = try fixture.registry.restore(allocation.id)
+    let allocations = try (0..<2).map { _ in
+      try fixture.registry.start(
+        branch: UUID().uuidString, repository: fixture.repository, provider: .git)
+    }.sorted { $0.id < $1.id }
+    let allocation = allocations[0]
+    let valid = allocations[1]
+    for checkout in allocations {
+      _ = try fixture.registry.offload(
+        id: checkout.id, minimumIdle: 0, transcriptDirectory: fixture.root, isRemote: false)
+      _ = try fixture.registry.restore(checkout.id)
+    }
     let recovery = try XCTUnwrap(fixture.registry.inspect(allocation.id).recovery)
+    let old = Date().addingTimeInterval(-48 * 3_600)
     try withRegistry(fixture.registry.stateDirectory) { store in
-      var pending = try store.allocation(allocation.id)
-      pending.recovery = RecoveryRecord(
-        commit: recovery.commit, reference: recovery.reference, branch: recovery.branch,
-        preservedAt: recovery.preservedAt, event: "manual-offload-local",
-        lastFileActivity: Date().addingTimeInterval(-48 * 3_600))
-      try store.save(pending)
+      for checkout in allocations {
+        var pending = try store.allocation(checkout.id)
+        let checkpoint = try XCTUnwrap(pending.recovery)
+        pending.recovery = RecoveryRecord(
+          commit: checkpoint.commit, reference: checkpoint.reference, branch: checkpoint.branch,
+          preservedAt: checkpoint.preservedAt, event: "manual-offload-local",
+          lastFileActivity: old)
+        try store.save(pending)
+      }
     }
     let conversation = try Registry(
       stateDirectory: fixture.registry.stateDirectory,
       conversation: ConversationContext(
         sessionID: "missing-reference", processID: getpid(),
-        allocationIDs: [allocation.id], cwd: fixture.repository))
-    _ = try conversation.claim(allocation.id)
-    let old = Date().addingTimeInterval(-48 * 3_600)
-    for path in ["", "tracked", ".gitignore"] {
-      try FileManager.default.setAttributes(
-        [.modificationDate: old], ofItemAtPath: allocation.path + "/" + path)
+        allocationIDs: allocations.map(\.id), cwd: fixture.repository))
+    for checkout in allocations { _ = try conversation.claim(checkout.id) }
+    for checkout in allocations {
+      for path in ["", "tracked", ".gitignore"] {
+        try FileManager.default.setAttributes(
+          [.modificationDate: old], ofItemAtPath: checkout.path + "/" + path)
+      }
     }
     _ = try git(fixture.repository, ["update-ref", "-d", recovery.reference])
-    XCTAssertThrowsError(
-      try conversation.oneOffCleanup(
-        id: allocation.id, minimumIdle: 24 * 3_600,
-        transcriptDirectory: fixture.root, isRetiringSessionClaims: true))
+    let results = try conversation.oneOffCleanup(
+      minimumIdle: 24 * 3_600, transcriptDirectory: fixture.root,
+      isRetiringSessionClaims: true)
+    XCTAssertEqual(results.count, 2)
     let retained = try fixture.registry.inspect(allocation.id)
+    XCTAssertEqual(retained.phase, .blocked)
     XCTAssertEqual(retained.conversationClaims?.map(\.sessionID), ["missing-reference"])
     XCTAssertTrue(FileManager.default.fileExists(atPath: allocation.path))
+    let removed = try fixture.registry.inspect(valid.id)
+    XCTAssertEqual(removed.phase, .removed, removed.reason ?? "")
+    XCTAssertTrue(removed.conversationClaims?.isEmpty ?? true)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: valid.path))
   }
 
   func testRetiringOffloadResumesCheckpointSavedBeforeCheckoutAdvance() throws {
