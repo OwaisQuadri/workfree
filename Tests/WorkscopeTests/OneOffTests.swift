@@ -152,6 +152,44 @@ final class OneOffTests: XCTestCase {
     XCTAssertTrue(FileManager.default.fileExists(atPath: allocation.path))
   }
 
+  func testRetirementDoesNotRemoveAnotherHostWithTheSameSessionID() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.registry.start(
+      branch: UUID().uuidString, repository: fixture.repository, provider: .git)
+    let peer = Process()
+    peer.executableURL = URL(fileURLWithPath: "/bin/sleep")
+    peer.arguments = ["60"]
+    try peer.run()
+    defer {
+      peer.terminate()
+      peer.waitUntilExit()
+    }
+    let first = try Registry(
+      stateDirectory: fixture.registry.stateDirectory,
+      conversation: ConversationContext(
+        sessionID: "shared-session", processID: getpid(), allocationIDs: [allocation.id],
+        cwd: fixture.repository))
+    let second = try Registry(
+      stateDirectory: fixture.registry.stateDirectory,
+      conversation: ConversationContext(
+        sessionID: "shared-session", processID: peer.processIdentifier,
+        allocationIDs: [allocation.id], cwd: fixture.repository))
+    _ = try first.claim(allocation.id)
+    _ = try second.claim(allocation.id)
+    let old = Date().addingTimeInterval(-48 * 3_600)
+    for path in ["", "tracked", ".gitignore"] {
+      try FileManager.default.setAttributes(
+        [.modificationDate: old], ofItemAtPath: allocation.path + "/" + path)
+    }
+    XCTAssertTrue(
+      try first.offload(
+        id: allocation.id, minimumIdle: 24 * 3_600, transcriptDirectory: fixture.root,
+        isRemote: false, isRetiringSessionClaims: true
+      ).isEmpty)
+    XCTAssertEqual(try fixture.registry.inspect(allocation.id).conversationClaims?.count, 2)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: allocation.path))
+  }
+
   func testRemoteOffloadChecksOriginAndSkipsActiveWorkspaceOnRepoCleanup() throws {
     let fixture = try Fixture()
     let saved = try fixture.registry.start(
@@ -878,6 +916,37 @@ final class OneOffTests: XCTestCase {
         transcriptDirectory: fixture.root, isRetiringSessionClaims: true))
     let retained = try fixture.registry.inspect(allocation.id)
     XCTAssertEqual(retained.conversationClaims?.map(\.sessionID), ["missing-reference"])
+    XCTAssertTrue(FileManager.default.fileExists(atPath: allocation.path))
+  }
+
+  func testInterruptedRemovalKeepsLiveConversationClaim() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.registry.start(
+      branch: UUID().uuidString, repository: fixture.repository, provider: .git)
+    _ = try fixture.registry.offload(
+      id: allocation.id, minimumIdle: 0, transcriptDirectory: fixture.root, isRemote: false)
+    _ = try fixture.registry.restore(allocation.id)
+    let conversation = try Registry(
+      stateDirectory: fixture.registry.stateDirectory,
+      conversation: ConversationContext(
+        sessionID: "interrupted-host", processID: getpid(),
+        allocationIDs: [allocation.id], cwd: fixture.repository))
+    _ = try conversation.claim(allocation.id)
+    try withRegistry(fixture.registry.stateDirectory) { store in
+      var interrupted = try store.allocation(allocation.id)
+      let checkpoint = try XCTUnwrap(interrupted.recovery)
+      interrupted.recovery = RecoveryRecord(
+        commit: checkpoint.commit, reference: checkpoint.reference,
+        branch: checkpoint.branch, preservedAt: checkpoint.preservedAt,
+        event: "manual-cleanup", lastFileActivity: checkpoint.lastFileActivity)
+      interrupted.isRemovalPending = true
+      interrupted.phase = .removing
+      try store.save(interrupted)
+    }
+    _ = try fixture.registry.sweep()
+    let retained = try fixture.registry.inspect(allocation.id)
+    XCTAssertNotEqual(retained.phase, .removed)
+    XCTAssertEqual(retained.conversationClaims?.map(\.sessionID), ["interrupted-host"])
     XCTAssertTrue(FileManager.default.fileExists(atPath: allocation.path))
   }
 

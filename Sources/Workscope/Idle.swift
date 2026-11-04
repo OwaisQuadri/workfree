@@ -236,7 +236,7 @@ func transcriptMentions(
 func oneOffPreviews(
   _ allocations: [Allocation], minimumIdle: TimeInterval, transcriptDirectory: String,
   isCheckpointRequired: Bool = false, modifiedSince: Date? = nil, now: Date = Date(),
-  retiringSessionID: String? = nil
+  retiringClaim: ConversationClaim? = nil
 ) throws -> [OneOffPreview] {
   try require(minimumIdle >= 0 && minimumIdle.isFinite, "Invalid minimum idle age")
   let mentions =
@@ -245,10 +245,8 @@ func oneOffPreviews(
     : [:]
   return try allocations.map { allocation in
     var examined = allocation
-    if let retiringSessionID {
-      examined.conversationClaims = allocation.conversationClaims?.filter {
-        $0.sessionID != retiringSessionID
-      }
+    if let retiringClaim {
+      examined.conversationClaims = allocation.conversationClaims?.filter { $0 != retiringClaim }
     }
     var reasons = ownershipReasons(examined, isManual: true)
     if allocation.phase == .creating || allocation.phase == .failed || allocation.phase == .removed

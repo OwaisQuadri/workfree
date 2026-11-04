@@ -126,8 +126,14 @@ func recordAttempt(_ allocation: inout Allocation, event: String, reasons: [Stri
   allocation.cleanupAttempts = Array(attempts.suffix(32))
 }
 
-func ownershipReasons(_ allocation: Allocation, isManual: Bool = false) -> [String] {
-  var reasons = conversationReasons(allocation)
+func ownershipReasons(
+  _ allocation: Allocation, isManual: Bool = false, retiringClaim: ConversationClaim? = nil
+) -> [String] {
+  var examined = allocation
+  if let retiringClaim {
+    examined.conversationClaims = allocation.conversationClaims?.filter { $0 != retiringClaim }
+  }
+  var reasons = conversationReasons(examined)
   if !isManual && allocation.offloadCleanup != nil {
     reasons.append("Offloaded checkpoint requires idle-checked cleanup")
   }
@@ -248,9 +254,11 @@ func verifyRecovery(_ allocation: Allocation) throws {
 }
 
 func cleanupPreview(
-  _ allocation: Allocation, isFileVerificationRequired: Bool = true, isManual: Bool = false
+  _ allocation: Allocation, isFileVerificationRequired: Bool = true, isManual: Bool = false,
+  retiringClaim: ConversationClaim? = nil
 ) -> CleanupPreview {
-  var reasons = ownershipReasons(allocation, isManual: isManual)
+  var reasons = ownershipReasons(
+    allocation, isManual: isManual, retiringClaim: retiringClaim)
   if allocation.phase == .creating || allocation.phase == .failed {
     reasons.append("Allocation identity requires recovery")
   }
@@ -294,16 +302,17 @@ func cleanupPreview(
 func cleanup(
   _ allocation: inout Allocation, store: RegistryStore, event: String = "owner-release",
   minimumIdle: TimeInterval? = nil, transcriptDirectory: String? = nil,
-  transcriptModifiedSince: Date? = nil
+  transcriptModifiedSince: Date? = nil, retiringClaim: ConversationClaim? = nil
 ) throws {
   if allocation.phase == .removed { return }
   if allocation.isRemovalPending {
-    try reconcileRemoval(&allocation, store: store)
+    try reconcileRemoval(&allocation, store: store, retiringClaim: retiringClaim)
     return
   }
   let isManual = event == "manual-cleanup"
   let preview = cleanupPreview(
-    allocation, isFileVerificationRequired: event != "sweep", isManual: isManual)
+    allocation, isFileVerificationRequired: event != "sweep", isManual: isManual,
+    retiringClaim: retiringClaim)
   let blockers = preview.reasons.filter {
     $0 != "Awaiting grace period" && $0 != "Eligible after grace period"
   }
@@ -384,7 +393,8 @@ func cleanup(
       }
       let current = try oneOffPreviews(
         [allocation], minimumIdle: minimumIdle, transcriptDirectory: transcriptDirectory,
-        isCheckpointRequired: true, modifiedSince: transcriptModifiedSince)[0]
+        isCheckpointRequired: true, modifiedSince: transcriptModifiedSince,
+        retiringClaim: retiringClaim)[0]
       try require(current.isEligible, current.reasons.joined(separator: "; "))
     }
     allocation.phase = .removing
@@ -410,6 +420,9 @@ func cleanup(
       _ = try git(allocation.repository, ["worktree", "remove", "--", allocation.path])
     }
     try completeRemoval(&allocation)
+    if let retiringClaim {
+      allocation.conversationClaims?.removeAll { $0 == retiringClaim }
+    }
     recordAttempt(&allocation, event: event, reasons: [])
   } catch {
     allocation.phase = .blocked
@@ -432,7 +445,10 @@ func completeRemoval(_ allocation: inout Allocation) throws {
   allocation.removedAt = Date()
 }
 
-func reconcileRemoval(_ allocation: inout Allocation, store: RegistryStore) throws {
+func reconcileRemoval(
+  _ allocation: inout Allocation, store: RegistryStore,
+  retiringClaim: ConversationClaim? = nil
+) throws {
   do {
     let isManual = allocation.recovery?.event == "manual-cleanup"
     try require(
@@ -440,7 +456,7 @@ func reconcileRemoval(_ allocation: inout Allocation, store: RegistryStore) thro
         || allocation.offloadCleanup != nil || isManual,
       "Cleanup is not authorized")
     try require(
-      ownershipReasons(allocation, isManual: isManual).isEmpty,
+      ownershipReasons(allocation, isManual: isManual, retiringClaim: retiringClaim).isEmpty,
       "Active owners prevent recovery")
     if try !isPresent(allocation.path) {
       try require(
@@ -482,6 +498,9 @@ func reconcileRemoval(_ allocation: inout Allocation, store: RegistryStore) thro
       return
     }
     try completeRemoval(&allocation)
+    if let retiringClaim {
+      allocation.conversationClaims?.removeAll { $0 == retiringClaim }
+    }
     recordAttempt(&allocation, event: "recovery", reasons: [])
   } catch {
     allocation.phase = .blocked

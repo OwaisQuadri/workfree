@@ -280,15 +280,13 @@ public struct Registry: Sendable {
       let transcriptScanStarted = Date().addingTimeInterval(-1)
       let candidates = try oneOffPreviews(
         scoped, minimumIdle: minimumIdle, transcriptDirectory: transcriptDirectory,
-        retiringSessionID: retiring?.sessionID)
+        retiringClaim: retiring?.claim)
       var results: [Allocation] = []
       for preview in candidates where preview.isEligible {
         var allocation = try store.allocation(preview.id)
         let originalClaims = allocation.conversationClaims
         if let retiring {
-          allocation.conversationClaims = originalClaims?.filter {
-            $0.sessionID != retiring.sessionID
-          }
+          allocation.conversationClaims = originalClaims?.filter { $0 != retiring.claim }
         }
         do {
           try verifyIdentity(allocation)
@@ -319,7 +317,6 @@ public struct Registry: Sendable {
           allocation.offloadCleanup = OffloadCleanup(
             minimumIdle: minimumIdle, transcriptDirectory: transcriptDirectory,
             nextCheckAt: nil)
-          let retiringClaims = allocation.conversationClaims
           allocation.conversationClaims = originalClaims
           try store.save(allocation)
           try require(
@@ -329,7 +326,6 @@ public struct Registry: Sendable {
                 == git(allocation.repository, ["rev-parse", offload.commit + "^{tree}"]),
             "Checkout changed during offload")
           try advanceCheckout(allocation, offload: offload)
-          allocation.conversationClaims = retiringClaims
           allocation.phase = .retained
           allocation.reason = nil
           recordAttempt(&allocation, event: allocation.recovery!.event, reasons: [])
@@ -337,7 +333,7 @@ public struct Registry: Sendable {
           try cleanup(
             &allocation, store: store, event: "manual-cleanup", minimumIdle: minimumIdle,
             transcriptDirectory: transcriptDirectory,
-            transcriptModifiedSince: transcriptScanStarted)
+            transcriptModifiedSince: transcriptScanStarted, retiringClaim: retiring?.claim)
           if allocation.phase != .removed { allocation.conversationClaims = originalClaims }
         } catch {
           allocation.conversationClaims = originalClaims
@@ -384,20 +380,16 @@ public struct Registry: Sendable {
       }
       let candidates = try oneOffPreviews(
         scoped, minimumIdle: minimumIdle, transcriptDirectory: transcriptDirectory,
-        isCheckpointRequired: true, retiringSessionID: retiring?.sessionID)
+        isCheckpointRequired: true, retiringClaim: retiring?.claim)
       var results: [Allocation] = []
       for preview in candidates where preview.isEligible {
         var allocation = try store.allocation(preview.id)
         let originalClaims = allocation.conversationClaims
-        if let retiring {
-          try verifyRecovery(allocation)
-          allocation.conversationClaims = originalClaims?.filter {
-            $0.sessionID != retiring.sessionID
-          }
-        }
+        if retiring != nil { try verifyRecovery(allocation) }
         try cleanup(
           &allocation, store: store, event: "manual-cleanup", minimumIdle: minimumIdle,
-          transcriptDirectory: transcriptDirectory, transcriptModifiedSince: transcriptScanStarted)
+          transcriptDirectory: transcriptDirectory, transcriptModifiedSince: transcriptScanStarted,
+          retiringClaim: retiring?.claim)
         if retiring != nil && allocation.phase != .removed {
           allocation.conversationClaims = originalClaims
           try store.save(allocation)
@@ -853,12 +845,14 @@ public struct Registry: Sendable {
     return status
   }
 
-  private func requireConversationOutsideCheckouts() throws -> (sessionID: String, cwd: String) {
+  private func requireConversationOutsideCheckouts() throws -> (
+    claim: ConversationClaim, cwd: String
+  ) {
     guard let conversation, let cwd = conversation.cwd else {
       throw WorkscopeError(
         "Claim retirement requires a verified conversation and working directory")
     }
-    return (conversation.claim.sessionID, cwd)
+    return (conversation.claim, cwd)
   }
 
   private func retire(
