@@ -472,8 +472,11 @@ public struct Registry: Sendable {
                 transcriptDirectory: policy.transcriptDirectory,
                 transcriptModifiedSince: scanStarted)
             } else {
-              allocation.offloadCleanup?.nextCheckAt =
-                preview.eligibleAt > Date() ? preview.eligibleAt : nil
+              if let eligibleAt = preview.eligibleAt, eligibleAt > Date() {
+                allocation.offloadCleanup?.nextCheckAt = eligibleAt
+              } else {
+                allocation.offloadCleanup?.nextCheckAt = nil
+              }
               allocation.phase = .retained
               allocation.reason = preview.reasons.joined(separator: "; ")
               try store.save(allocation)

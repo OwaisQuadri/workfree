@@ -101,7 +101,7 @@ Standing enable and revoke are not model tool actions. The legacy `isCleanupAllo
 
 The tool exposes `revoke-cleanup`, `preview`, `sweep`, and `restore`.
 Task owners can survive eviction under that policy.
-Execution, workspace, and pin owners still block removal. Live or uncertain conversation claims also block removal.
+Execution, workspace, and pin owners still block removal. Live or uncertain conversation claims also block removal during automatic sweeps. An explicit CLI offload with a positive idle age and `--retire-session-claims` can retire only the invoking conversation's claim, after a valid checkpoint and successful removal. Other claims and the current checkout remain protected. The adapter does not expose this one-off action.
 The adapter sweeps recorded grants at session startup and every 60 seconds.
 Session shutdown stops the timer without releasing owners. Startup and timer sweeps never request permission or display cleanup authorization dialogs.
 No scheduler is installed outside Pi.

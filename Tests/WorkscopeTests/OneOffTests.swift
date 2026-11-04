@@ -183,6 +183,14 @@ final class OneOffTests: XCTestCase {
         isRemote: false, isRetiringSessionClaims: true
       ).isEmpty)
     XCTAssertEqual(try fixture.registry.inspect(allocation.id).conversationClaims?.count, 2)
+    let blocked = try XCTUnwrap(
+      first.oneOffPreview(
+        id: allocation.id, minimumIdle: 24 * 3_600, transcriptDirectory: fixture.root,
+        isRetiringSessionClaims: true
+      ).first)
+    XCTAssertFalse(blocked.isTranscriptActivityChecked)
+    XCTAssertNil(blocked.eligibleAt)
+    XCTAssertTrue(blocked.reasons.contains("Retained conversation: second"))
     let inside = try Registry(
       stateDirectory: fixture.registry.stateDirectory,
       conversation: ConversationContext(

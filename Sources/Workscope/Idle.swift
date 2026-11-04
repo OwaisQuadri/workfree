@@ -4,7 +4,8 @@ public struct OneOffPreview: Codable, Sendable {
   public let id: String
   public let lastFileActivity: Date
   public let lastMention: Date?
-  public let eligibleAt: Date
+  public let eligibleAt: Date?
+  public let isTranscriptActivityChecked: Bool
   public let reasons: [String]
   public let estimatedBytes: Int64
 
@@ -243,7 +244,9 @@ func oneOffPreviews(
   additionalReasons: (Allocation) -> [String] = { _ in [] }
 ) throws -> [OneOffPreview] {
   try require(minimumIdle >= 0 && minimumIdle.isFinite, "Invalid minimum idle age")
-  func preview(_ allocation: Allocation, mention: Date?) throws -> OneOffPreview {
+  func preview(_ allocation: Allocation, mention: Date?, isTranscriptChecked: Bool = false)
+    throws -> OneOffPreview
+  {
     let mentionForActivity = mention ?? .distantPast
     var examined = allocation
     if let retiringClaim {
@@ -265,8 +268,8 @@ func oneOffPreviews(
       reasons.append("Checkout is missing")
       return OneOffPreview(
         id: allocation.id, lastFileActivity: .distantPast,
-        lastMention: mention, eligibleAt: .distantPast,
-        reasons: reasons, estimatedBytes: 0)
+        lastMention: mention, eligibleAt: nil,
+        isTranscriptActivityChecked: false, reasons: reasons, estimatedBytes: 0)
     }
     let modified = try lastFileActivity(allocation.path)
     let fileActivity: Date
@@ -286,8 +289,14 @@ func oneOffPreviews(
     }
     return OneOffPreview(
       id: allocation.id, lastFileActivity: fileActivity, lastMention: mention,
-      eligibleAt: eligibleAt, reasons: reasons,
+      eligibleAt: eligibleAt, isTranscriptActivityChecked: isTranscriptChecked, reasons: reasons,
       estimatedBytes: reasons.isEmpty ? measure(allocation.path).privateBytes : 0)
+  }
+  func unchecked(_ blocked: OneOffPreview) -> OneOffPreview {
+    OneOffPreview(
+      id: blocked.id, lastFileActivity: blocked.lastFileActivity,
+      lastMention: nil, eligibleAt: nil, isTranscriptActivityChecked: false,
+      reasons: blocked.reasons, estimatedBytes: 0)
   }
   let preliminary = try allocations.map { try preview($0, mention: nil) }
   guard minimumIdle > 0 else { return preliminary }
@@ -295,12 +304,14 @@ func oneOffPreviews(
     preliminary[index].reasons.allSatisfy { $0 == "Minimum idle age has not elapsed" }
       ? allocation : nil
   }
-  guard !candidates.isEmpty else { return preliminary }
+  guard !candidates.isEmpty else { return preliminary.map(unchecked) }
   let candidateIDs = Set(candidates.map(\.id))
   let mentions = try transcriptMentions(
     candidates, directory: transcriptDirectory, modifiedSince: modifiedSince)
   return try allocations.enumerated().map { index, allocation in
-    candidateIDs.contains(allocation.id)
-      ? try preview(allocation, mention: mentions[allocation.id]) : preliminary[index]
+    if candidateIDs.contains(allocation.id) {
+      return try preview(allocation, mention: mentions[allocation.id], isTranscriptChecked: true)
+    }
+    return unchecked(preliminary[index])
   }
 }
