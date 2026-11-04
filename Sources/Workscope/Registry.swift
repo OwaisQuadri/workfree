@@ -259,18 +259,37 @@ public struct Registry: Sendable {
 
   public func offload(
     id: String? = nil, repository: String? = nil, minimumIdle: TimeInterval,
-    transcriptDirectory: String, isRemote: Bool
+    transcriptDirectory: String, isRemote: Bool, isRetiringSessionClaims: Bool = false,
+    excludingID: String? = nil
   ) throws -> [Allocation] {
-    try withRegistry(stateDirectory) { store in
+    try require(
+      !isRetiringSessionClaims || minimumIdle > 0, "Claim retirement requires an idle age")
+    let retiring = isRetiringSessionClaims ? try requireConversationOutsideCheckouts() : nil
+    return try withRegistry(stateDirectory) { store in
       let source = try repository.map(canonical)
       let allocations = try id.map { [try store.allocation($0)] } ?? store.allocations()
+      let scoped = allocations.filter {
+        (source == nil || $0.repository == source) && $0.id != excludingID
+          && (!isRetiringSessionClaims || $0.recovery == nil)
+      }
+      if let retiring {
+        try require(
+          !scoped.contains { isWithin(retiring.cwd, $0.path) },
+          "Cannot retire a claim for the current checkout")
+      }
       let transcriptScanStarted = Date().addingTimeInterval(-1)
       let candidates = try oneOffPreviews(
-        allocations.filter { source == nil || $0.repository == source },
-        minimumIdle: minimumIdle, transcriptDirectory: transcriptDirectory)
+        scoped, minimumIdle: minimumIdle, transcriptDirectory: transcriptDirectory,
+        retiringSessionID: retiring?.sessionID)
       var results: [Allocation] = []
       for preview in candidates where preview.isEligible {
         var allocation = try store.allocation(preview.id)
+        let originalClaims = allocation.conversationClaims
+        if let retiring {
+          allocation.conversationClaims = originalClaims?.filter {
+            $0.sessionID != retiring.sessionID
+          }
+        }
         do {
           try verifyIdentity(allocation)
           try require(ownershipReasons(allocation, isManual: true).isEmpty, "Checkout is in use")
@@ -317,6 +336,7 @@ public struct Registry: Sendable {
             transcriptDirectory: transcriptDirectory,
             transcriptModifiedSince: transcriptScanStarted)
         } catch {
+          if allocation.recovery == nil { allocation.conversationClaims = originalClaims }
           allocation.phase = .blocked
           allocation.reason = String(describing: error)
           recordAttempt(&allocation, event: "manual-offload", reasons: [allocation.reason!])
@@ -330,14 +350,25 @@ public struct Registry: Sendable {
 
   public func oneOffCleanup(
     id: String? = nil, repository: String? = nil, minimumIdle: TimeInterval,
-    transcriptDirectory: String
+    transcriptDirectory: String, isRetiringSessionClaims: Bool = false,
+    excludingID: String? = nil
   ) throws -> [Allocation] {
     try require(minimumIdle >= 0 && minimumIdle.isFinite, "Invalid minimum idle age")
+    try require(
+      !isRetiringSessionClaims || minimumIdle > 0, "Claim retirement requires an idle age")
+    let retiring = isRetiringSessionClaims ? try requireConversationOutsideCheckouts() : nil
     return try withRegistry(stateDirectory) { store in
       let source = try repository.map(canonical)
       let allocations = try id.map { [try store.allocation($0)] } ?? store.allocations()
       let transcriptScanStarted = Date().addingTimeInterval(-1)
-      let scoped = allocations.filter { source == nil || $0.repository == source }
+      let scoped = allocations.filter {
+        (source == nil || $0.repository == source) && $0.id != excludingID
+      }
+      if let retiring {
+        try require(
+          !scoped.contains { isWithin(retiring.cwd, $0.path) },
+          "Cannot retire a claim for the current checkout")
+      }
       for var allocation in scoped
       where allocation.recovery?.event.hasPrefix("manual-offload-") == true
         && allocation.offloadCleanup == nil
@@ -349,10 +380,15 @@ public struct Registry: Sendable {
       }
       let candidates = try oneOffPreviews(
         scoped, minimumIdle: minimumIdle, transcriptDirectory: transcriptDirectory,
-        isCheckpointRequired: true)
+        isCheckpointRequired: true, retiringSessionID: retiring?.sessionID)
       var results: [Allocation] = []
       for preview in candidates where preview.isEligible {
         var allocation = try store.allocation(preview.id)
+        if let retiring {
+          allocation.conversationClaims = allocation.conversationClaims?.filter {
+            $0.sessionID != retiring.sessionID
+          }
+        }
         try cleanup(
           &allocation, store: store, event: "manual-cleanup", minimumIdle: minimumIdle,
           transcriptDirectory: transcriptDirectory, transcriptModifiedSince: transcriptScanStarted)
@@ -805,6 +841,14 @@ public struct Registry: Sendable {
       ? process.terminationStatus : 128 + process.terminationStatus
     _ = try entryExit(id, owner: token, status: status)
     return status
+  }
+
+  private func requireConversationOutsideCheckouts() throws -> (sessionID: String, cwd: String) {
+    guard let conversation, let cwd = conversation.cwd else {
+      throw WorkscopeError(
+        "Claim retirement requires a verified conversation and working directory")
+    }
+    return (conversation.claim.sessionID, cwd)
   }
 
   private func retire(

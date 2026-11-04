@@ -31,10 +31,11 @@ let help = """
     revoke-cleanup ID
     preview
     sweep
-    offload-preview ID|--repo PATH --min-idle 0h|24h|2w [--sessions-dir PATH]
-    offload ID|--repo PATH --min-idle 0h|24h|2w --checkpoint local|remote
-      [--sessions-dir PATH]
-    cleanup-now ID|--repo PATH --min-idle 0h|24h|2w [--sessions-dir PATH]
+    offload-preview ID|--repo PATH|--all --min-idle 0h|24h|2w [--sessions-dir PATH]
+    offload ID|--repo PATH|--all --min-idle 0h|24h|2w --checkpoint local|remote
+      [--sessions-dir PATH] [--retire-session-claims] [--exclude-id ID]
+    cleanup-now ID|--repo PATH|--all --min-idle 0h|24h|2w
+      [--sessions-dir PATH] [--retire-session-claims] [--exclude-id ID]
     restore ID
     run ID [--owner TOKEN] -- COMMAND...
     --help
@@ -44,6 +45,8 @@ let help = """
     [--session-cwd PATH] [--session-allocations JSON_ARRAY]
   Use the Pi host PID, never the short-lived wf subprocess PID.
   claim binds explicit allocations and managed cwd before use; shutdown does not release claims.
+  --retire-session-claims releases only this conversation's claims for eligible checkouts
+    after an idle check and recoverable offload; other conversations still block cleanup.
 
   Uses simgit CoW if available, otherwise native Git. --require-cow refuses native Git.
   Selected-provider failures never switch providers.
@@ -58,6 +61,8 @@ struct Arguments {
   var options: [String: String] = [:]
   var disposablePaths: [String] = []
   var isGlobal = false
+  var isAll = false
+  var isRetiringSessionClaims = false
   var isCowRequired = false
   var isCleanupAuthorized = false
   var isCleanupPolicyRequired = false
@@ -85,6 +90,8 @@ struct Arguments {
         }
         switch argument {
         case "--global": isGlobal = true
+        case "--all": isAll = true
+        case "--retire-session-claims": isRetiringSessionClaims = true
         case "--allow-cleanup": isCleanupAuthorized = true
         case "--require-cleanup-policy": isCleanupPolicyRequired = true
         case "--require-cow": isCowRequired = true
@@ -96,7 +103,7 @@ struct Arguments {
         case "--version": isVersion = true
         case "--state-dir", "--repo", "--base", "--path", "--owner", "--kind", "--label",
           "--status", "--provider", "--since", "--grace-seconds", "--disposable-path",
-          "--min-idle", "--checkpoint", "--sessions-dir",
+          "--min-idle", "--checkpoint", "--sessions-dir", "--exclude-id",
           "--session-id", "--session-pid", "--session-cwd", "--session-allocations", "--allocation":
           index += 1
           guard index < arguments.count,
@@ -144,10 +151,18 @@ struct Arguments {
     case "entry-exit": allowed = ["--owner", "--status"]
     case "run": allowed = ["--owner", "--"]
     case "repair-identity": allowed = ["--accept-replaced-repository"]
-    case "offload-preview", "cleanup-now":
-      allowed = ["--repo", "--min-idle", "--sessions-dir"]
+    case "offload-preview":
+      allowed = ["--repo", "--all", "--min-idle", "--sessions-dir"]
+    case "cleanup-now":
+      allowed = [
+        "--repo", "--all", "--min-idle", "--sessions-dir", "--retire-session-claims",
+        "--exclude-id",
+      ]
     case "offload":
-      allowed = ["--repo", "--min-idle", "--sessions-dir", "--checkpoint"]
+      allowed = [
+        "--repo", "--all", "--min-idle", "--sessions-dir", "--checkpoint",
+        "--retire-session-claims", "--exclude-id",
+      ]
     case "inspect", "list", "keep", "unkeep", "recover", "revoke-cleanup", "restore", "preview",
       "sweep":
       allowed = []
@@ -177,11 +192,15 @@ struct Arguments {
       throw WorkscopeError("Wrong number of arguments for \(action)")
     }
     if isOneOff {
-      guard (positional.count == 2) != (options["--repo"] != nil) else {
-        throw WorkscopeError("Choose exactly one of allocation ID or --repo PATH")
+      let selections = [positional.count == 2, options["--repo"] != nil, isAll].filter { $0 }.count
+      guard selections == 1 else {
+        throw WorkscopeError("Choose exactly one of allocation ID, --repo PATH, or --all")
       }
       _ = try value("--min-idle")
       if action == "offload" { _ = try value("--checkpoint") }
+      if isRetiringSessionClaims && options["--session-id"] == nil {
+        throw WorkscopeError("Claim retirement requires a conversation identity")
+      }
     }
     if action == "run", !flags.contains("--") || command.isEmpty {
       throw WorkscopeError("run requires -- COMMAND...")
@@ -322,13 +341,17 @@ do {
         try output(
           registry.offload(
             id: id, repository: source, minimumIdle: minimumIdle,
-            transcriptDirectory: sessionDirectory, isRemote: checkpoint == "remote"),
+            transcriptDirectory: sessionDirectory, isRemote: checkpoint == "remote",
+            isRetiringSessionClaims: arguments.isRetiringSessionClaims,
+            excludingID: arguments.options["--exclude-id"]),
           isJSON: arguments.isJSON)
       default:
         try output(
           registry.oneOffCleanup(
             id: id, repository: source, minimumIdle: minimumIdle,
-            transcriptDirectory: sessionDirectory), isJSON: arguments.isJSON)
+            transcriptDirectory: sessionDirectory,
+            isRetiringSessionClaims: arguments.isRetiringSessionClaims,
+            excludingID: arguments.options["--exclude-id"]), isJSON: arguments.isJSON)
       }
     } else if action == "preview" {
       try output(CleanupPlan(registry.preview()), isJSON: arguments.isJSON)

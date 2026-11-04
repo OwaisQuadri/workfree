@@ -235,7 +235,8 @@ func transcriptMentions(
 
 func oneOffPreviews(
   _ allocations: [Allocation], minimumIdle: TimeInterval, transcriptDirectory: String,
-  isCheckpointRequired: Bool = false, modifiedSince: Date? = nil, now: Date = Date()
+  isCheckpointRequired: Bool = false, modifiedSince: Date? = nil, now: Date = Date(),
+  retiringSessionID: String? = nil
 ) throws -> [OneOffPreview] {
   try require(minimumIdle >= 0 && minimumIdle.isFinite, "Invalid minimum idle age")
   let mentions =
@@ -243,7 +244,13 @@ func oneOffPreviews(
     ? transcriptMentions(allocations, directory: transcriptDirectory, modifiedSince: modifiedSince)
     : [:]
   return try allocations.map { allocation in
-    var reasons = ownershipReasons(allocation, isManual: true)
+    var examined = allocation
+    if let retiringSessionID {
+      examined.conversationClaims = allocation.conversationClaims?.filter {
+        $0.sessionID != retiringSessionID
+      }
+    }
+    var reasons = ownershipReasons(examined, isManual: true)
     if allocation.phase == .creating || allocation.phase == .failed || allocation.phase == .removed
     {
       reasons.append("Allocation is not an active checkout")
