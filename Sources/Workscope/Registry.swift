@@ -270,7 +270,8 @@ public struct Registry: Sendable {
       let allocations = try id.map { [try store.allocation($0)] } ?? store.allocations()
       let scoped = allocations.filter {
         (source == nil || $0.repository == source) && $0.id != excludingID
-          && (!isRetiringSessionClaims || $0.recovery == nil)
+          && (!isRetiringSessionClaims || $0.recovery == nil
+            || $0.recovery?.event.hasPrefix("manual-offload-") == true)
       }
       if let retiring {
         try require(
@@ -290,6 +291,7 @@ public struct Registry: Sendable {
         }
         do {
           try verifyIdentity(allocation)
+          if allocation.recovery != nil { try verifyRecovery(allocation) }
           try require(ownershipReasons(allocation, isManual: true).isEmpty, "Checkout is in use")
           _ = try verifyFiles(allocation, isCheckpointAllowed: true)
           let offload = try isRemote ? pushOffload(allocation) : localOffload(allocation)
@@ -378,10 +380,18 @@ public struct Registry: Sendable {
           nextCheckAt: nil)
         try store.save(allocation)
       }
+      var results: [Allocation] = []
+      if let retiring {
+        for var allocation in scoped where allocation.isRemovalPending {
+          if try !isPresent(allocation.path) {
+            try reconcileRemoval(&allocation, store: store, retiringClaim: retiring.claim)
+            results.append(allocation)
+          }
+        }
+      }
       let candidates = try oneOffPreviews(
         scoped, minimumIdle: minimumIdle, transcriptDirectory: transcriptDirectory,
         isCheckpointRequired: true, retiringClaim: retiring?.claim)
-      var results: [Allocation] = []
       for preview in candidates where preview.isEligible {
         var allocation = try store.allocation(preview.id)
         let originalClaims = allocation.conversationClaims

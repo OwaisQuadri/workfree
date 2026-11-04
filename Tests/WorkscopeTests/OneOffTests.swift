@@ -919,6 +919,81 @@ final class OneOffTests: XCTestCase {
     XCTAssertTrue(FileManager.default.fileExists(atPath: allocation.path))
   }
 
+  func testRetiringOffloadResumesCheckpointSavedBeforeCheckoutAdvance() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.registry.start(
+      branch: UUID().uuidString, repository: fixture.repository, provider: .git)
+    let conversation = try Registry(
+      stateDirectory: fixture.registry.stateDirectory,
+      conversation: ConversationContext(
+        sessionID: "checkpoint-retry", processID: getpid(),
+        allocationIDs: [allocation.id], cwd: fixture.repository))
+    _ = try conversation.claim(allocation.id)
+    let old = Date().addingTimeInterval(-48 * 3_600)
+    for path in ["", "tracked", ".gitignore"] {
+      try FileManager.default.setAttributes(
+        [.modificationDate: old], ofItemAtPath: allocation.path + "/" + path)
+    }
+    let source = try git(allocation.path, ["rev-parse", "HEAD"])
+    let checkpoint = try localOffload(allocation)
+    let reference = "refs/workfree/recovery/" + allocation.id + "/" + UUID().uuidString
+    _ = try git(allocation.repository, ["update-ref", reference, checkpoint.commit, ""])
+    try withRegistry(fixture.registry.stateDirectory) { store in
+      var interrupted = try store.allocation(allocation.id)
+      interrupted.recovery = RecoveryRecord(
+        commit: checkpoint.commit, reference: reference,
+        branch: try? git(allocation.path, ["symbolic-ref", "--short", "HEAD"]),
+        preservedAt: Date(), event: "manual-offload-local", lastFileActivity: old)
+      interrupted.offloadCleanup = OffloadCleanup(
+        minimumIdle: 24 * 3_600, transcriptDirectory: fixture.root, nextCheckAt: nil)
+      try store.save(interrupted)
+    }
+    XCTAssertEqual(try git(allocation.path, ["rev-parse", "HEAD"]), source)
+    let result = try XCTUnwrap(
+      conversation.offload(
+        id: allocation.id, minimumIdle: 24 * 3_600, transcriptDirectory: fixture.root,
+        isRemote: false, isRetiringSessionClaims: true
+      ).first)
+    XCTAssertEqual(result.phase, .removed, result.reason ?? "")
+    XCTAssertTrue(result.conversationClaims?.isEmpty ?? true)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: allocation.path))
+  }
+
+  func testRetiringCleanupReconcilesCheckoutRemovedBeforeRegistrySave() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.registry.start(
+      branch: UUID().uuidString, repository: fixture.repository, provider: .git)
+    _ = try fixture.registry.offload(
+      id: allocation.id, minimumIdle: 0, transcriptDirectory: fixture.root, isRemote: false)
+    _ = try fixture.registry.restore(allocation.id)
+    let conversation = try Registry(
+      stateDirectory: fixture.registry.stateDirectory,
+      conversation: ConversationContext(
+        sessionID: "removed-retry", processID: getpid(),
+        allocationIDs: [allocation.id], cwd: fixture.repository))
+    _ = try conversation.claim(allocation.id)
+    try withRegistry(fixture.registry.stateDirectory) { store in
+      var interrupted = try store.allocation(allocation.id)
+      let checkpoint = try XCTUnwrap(interrupted.recovery)
+      interrupted.recovery = RecoveryRecord(
+        commit: checkpoint.commit, reference: checkpoint.reference,
+        branch: checkpoint.branch, preservedAt: checkpoint.preservedAt,
+        event: "manual-cleanup", lastFileActivity: checkpoint.lastFileActivity)
+      interrupted.phase = .removing
+      interrupted.isRemovalPending = true
+      try store.save(interrupted)
+    }
+    _ = try git(fixture.repository, ["worktree", "remove", "--", allocation.path])
+    let result = try XCTUnwrap(
+      conversation.oneOffCleanup(
+        id: allocation.id, minimumIdle: 24 * 3_600, transcriptDirectory: fixture.root,
+        isRetiringSessionClaims: true
+      ).first)
+    XCTAssertEqual(result.phase, .removed, result.reason ?? "")
+    XCTAssertTrue(result.conversationClaims?.isEmpty ?? true)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: allocation.path))
+  }
+
   func testInterruptedRemovalKeepsLiveConversationClaim() throws {
     let fixture = try Fixture()
     let allocation = try fixture.registry.start(
