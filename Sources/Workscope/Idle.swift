@@ -241,7 +241,9 @@ func oneOffPreviews(
   try require(minimumIdle >= 0 && minimumIdle.isFinite, "Invalid minimum idle age")
   let mentions =
     try minimumIdle > 0
-    ? transcriptMentions(allocations, directory: transcriptDirectory, modifiedSince: modifiedSince)
+    ? transcriptMentions(
+      allocations, directory: transcriptDirectory,
+      modifiedSince: modifiedSince ?? now.addingTimeInterval(-minimumIdle))
     : [:]
   return try allocations.map { allocation in
     var examined = allocation

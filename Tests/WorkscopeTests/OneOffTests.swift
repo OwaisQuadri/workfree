@@ -321,6 +321,28 @@ final class OneOffTests: XCTestCase {
     XCTAssertTrue(FileManager.default.fileExists(atPath: allocation.path))
   }
 
+  func testPreviewSkipsTranscriptsOlderThanMinimumIdle() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.registry.start(
+      branch: UUID().uuidString, repository: fixture.repository, provider: .git)
+    let old = Date().addingTimeInterval(-7 * 24 * 3600)
+    for path in [allocation.path + "/tracked", allocation.path + "/.gitignore", allocation.path] {
+      try FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: path)
+    }
+    let sessions = fixture.root + "/sessions"
+    try FileManager.default.createDirectory(atPath: sessions, withIntermediateDirectories: true)
+    let transcript = sessions + "/old.jsonl"
+    try Data("{malformed \"".utf8).write(to: URL(fileURLWithPath: transcript))
+    try FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: transcript)
+
+    let preview = try XCTUnwrap(
+      fixture.registry.oneOffPreview(
+        id: allocation.id, minimumIdle: 24 * 3600, transcriptDirectory: sessions
+      ).first)
+    XCTAssertTrue(preview.isEligible, preview.reasons.description)
+    XCTAssertNil(preview.lastMention)
+  }
+
   func testMalformedUnrelatedTranscriptDoesNotBlockButPossibleMentionDoes() throws {
     let fixture = try Fixture()
     let allocation = try fixture.registry.start(
