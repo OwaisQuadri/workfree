@@ -60,6 +60,12 @@ final class OneOffTests: XCTestCase {
       try conversation.oneOffPreview(
         id: allocation.id, minimumIdle: 24 * 3_600, transcriptDirectory: fixture.root
       )[0].isEligible)
+    XCTAssertTrue(
+      try conversation.oneOffPreview(
+        id: allocation.id, minimumIdle: 24 * 3_600, transcriptDirectory: fixture.root,
+        isRetiringSessionClaims: true
+      )[0].isEligible)
+    XCTAssertEqual(try conversation.inspect(allocation.id).conversationClaims?.count, 1)
     let result = try XCTUnwrap(
       conversation.offload(
         id: allocation.id, minimumIdle: 24 * 3_600, transcriptDirectory: fixture.root,
@@ -321,7 +327,7 @@ final class OneOffTests: XCTestCase {
     XCTAssertTrue(FileManager.default.fileExists(atPath: allocation.path))
   }
 
-  func testPreviewSkipsTranscriptsOlderThanMinimumIdle() throws {
+  func testOldTranscriptFileWithRecentMessageStillBlocksCleanup() throws {
     let fixture = try Fixture()
     let allocation = try fixture.registry.start(
       branch: UUID().uuidString, repository: fixture.repository, provider: .git)
@@ -332,15 +338,20 @@ final class OneOffTests: XCTestCase {
     let sessions = fixture.root + "/sessions"
     try FileManager.default.createDirectory(atPath: sessions, withIntermediateDirectories: true)
     let transcript = sessions + "/old.jsonl"
-    try Data("{malformed \"".utf8).write(to: URL(fileURLWithPath: transcript))
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let line =
+      "{\"type\":\"message\",\"timestamp\":\"\(formatter.string(from: Date()))\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"\(allocation.id)\"}]}}\n"
+    try Data(line.utf8).write(to: URL(fileURLWithPath: transcript))
     try FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: transcript)
 
     let preview = try XCTUnwrap(
       fixture.registry.oneOffPreview(
         id: allocation.id, minimumIdle: 24 * 3600, transcriptDirectory: sessions
       ).first)
-    XCTAssertTrue(preview.isEligible, preview.reasons.description)
-    XCTAssertNil(preview.lastMention)
+    XCTAssertFalse(preview.isEligible)
+    XCTAssertTrue(preview.reasons.contains("Minimum idle age has not elapsed"))
+    XCTAssertNotNil(preview.lastMention)
   }
 
   func testMalformedUnrelatedTranscriptDoesNotBlockButPossibleMentionDoes() throws {

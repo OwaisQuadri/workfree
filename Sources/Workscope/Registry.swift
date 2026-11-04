@@ -246,14 +246,21 @@ public struct Registry: Sendable {
 
   public func oneOffPreview(
     id: String? = nil, repository: String? = nil, minimumIdle: TimeInterval,
-    transcriptDirectory: String
+    transcriptDirectory: String, isRetiringSessionClaims: Bool = false,
+    excludingID: String? = nil
   ) throws -> [OneOffPreview] {
-    try withRegistry(stateDirectory) { store in
+    try require(
+      !isRetiringSessionClaims || minimumIdle > 0, "Claim retirement requires an idle age")
+    let retiring = isRetiringSessionClaims ? try requireConversationOutsideCheckouts() : nil
+    return try withRegistry(stateDirectory) { store in
       let source = try repository.map(canonical)
       let allocations = try id.map { [try store.allocation($0)] } ?? store.allocations()
       return try oneOffPreviews(
-        allocations.filter { source == nil || $0.repository == source },
-        minimumIdle: minimumIdle, transcriptDirectory: transcriptDirectory)
+        allocations.filter {
+          (source == nil || $0.repository == source) && $0.id != excludingID
+        },
+        minimumIdle: minimumIdle, transcriptDirectory: transcriptDirectory,
+        retiringClaim: retiring?.claim)
     }
   }
 

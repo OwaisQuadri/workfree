@@ -31,7 +31,8 @@ let help = """
     revoke-cleanup ID
     preview
     sweep
-    offload-preview ID|--repo PATH|--all --min-idle 0h|24h|2w [--sessions-dir PATH]
+    offload-preview ID|--repo PATH|--all --min-idle 0h|24h|2w
+      [--sessions-dir PATH] [--retire-session-claims] [--exclude-id ID]
     offload ID|--repo PATH|--all --min-idle 0h|24h|2w --checkpoint local|remote
       [--sessions-dir PATH] [--retire-session-claims] [--exclude-id ID]
     cleanup-now ID|--repo PATH|--all --min-idle 0h|24h|2w
@@ -152,7 +153,10 @@ struct Arguments {
     case "run": allowed = ["--owner", "--"]
     case "repair-identity": allowed = ["--accept-replaced-repository"]
     case "offload-preview":
-      allowed = ["--repo", "--all", "--min-idle", "--sessions-dir"]
+      allowed = [
+        "--repo", "--all", "--min-idle", "--sessions-dir", "--retire-session-claims",
+        "--exclude-id",
+      ]
     case "cleanup-now":
       allowed = [
         "--repo", "--all", "--min-idle", "--sessions-dir", "--retire-session-claims",
@@ -332,7 +336,9 @@ do {
         try output(
           registry.oneOffPreview(
             id: id, repository: source, minimumIdle: minimumIdle,
-            transcriptDirectory: sessionDirectory), isJSON: arguments.isJSON)
+            transcriptDirectory: sessionDirectory,
+            isRetiringSessionClaims: arguments.isRetiringSessionClaims,
+            excludingID: arguments.options["--exclude-id"]), isJSON: arguments.isJSON)
       case "offload":
         let checkpoint = try arguments.value("--checkpoint")
         guard checkpoint == "local" || checkpoint == "remote" else {

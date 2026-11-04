@@ -140,6 +140,8 @@ func transcriptMentions(
   var latest: [String: Date] = [:]
   let mentionStrings = allocations.flatMap { [$0.id, $0.path] }
   let mentionBytes = mentionStrings.map { Data($0.utf8) }
+  let pathsContainIdentifiers = allocations.allSatisfy { $0.path.contains($0.id) }
+  let unicodeEscape = Data("\\u".utf8)
   let asciiWithNonASCIIEquivalent = Data(";K`".utf8)
   let uncertainPathPrefixes = allocations.compactMap { allocation -> Data? in
     let bytes = Array(allocation.path.utf8)
@@ -158,6 +160,7 @@ func transcriptMentions(
     let isEscapePresent = data.range(of: backslash) != nil
     let isEscapedMentionPresent =
       isEscapePresent
+      && (!pathsContainIdentifiers || data.range(of: unicodeEscape) != nil)
       && isUnescapedJSONReference(data, matching: mentionBytes)
     let isUncertainPathPossible = uncertainPathPrefixes.contains { prefix in
       prefix.isEmpty || data.range(of: prefix) != nil
@@ -239,13 +242,8 @@ func oneOffPreviews(
   retiringClaim: ConversationClaim? = nil
 ) throws -> [OneOffPreview] {
   try require(minimumIdle >= 0 && minimumIdle.isFinite, "Invalid minimum idle age")
-  let mentions =
-    try minimumIdle > 0
-    ? transcriptMentions(
-      allocations, directory: transcriptDirectory,
-      modifiedSince: modifiedSince ?? now.addingTimeInterval(-minimumIdle))
-    : [:]
-  return try allocations.map { allocation in
+  func preview(_ allocation: Allocation, mention: Date?) throws -> OneOffPreview {
+    let mentionForActivity = mention ?? .distantPast
     var examined = allocation
     if let retiringClaim {
       examined.conversationClaims = allocation.conversationClaims?.filter { $0 != retiringClaim }
@@ -266,7 +264,7 @@ func oneOffPreviews(
       reasons.append("Checkout is missing")
       return OneOffPreview(
         id: allocation.id, lastFileActivity: .distantPast,
-        lastMention: mentions[allocation.id], eligibleAt: .distantPast,
+        lastMention: mention, eligibleAt: .distantPast,
         reasons: reasons, estimatedBytes: 0)
     }
     let modified = try lastFileActivity(allocation.path)
@@ -278,8 +276,7 @@ func oneOffPreviews(
     } else {
       fileActivity = modified
     }
-    let eligibleAt = max(fileActivity, mentions[allocation.id] ?? .distantPast)
-      .addingTimeInterval(minimumIdle)
+    let eligibleAt = max(fileActivity, mentionForActivity).addingTimeInterval(minimumIdle)
     if eligibleAt > now { reasons.append("Minimum idle age has not elapsed") }
     if reasons.isEmpty {
       do { _ = try verifyFiles(allocation, isCheckpointAllowed: true) } catch {
@@ -287,8 +284,22 @@ func oneOffPreviews(
       }
     }
     return OneOffPreview(
-      id: allocation.id, lastFileActivity: fileActivity, lastMention: mentions[allocation.id],
+      id: allocation.id, lastFileActivity: fileActivity, lastMention: mention,
       eligibleAt: eligibleAt, reasons: reasons,
       estimatedBytes: reasons.isEmpty ? measure(allocation.path).privateBytes : 0)
+  }
+  let preliminary = try allocations.map { try preview($0, mention: nil) }
+  guard minimumIdle > 0 else { return preliminary }
+  let candidates = allocations.enumerated().compactMap { index, allocation in
+    preliminary[index].reasons.allSatisfy { $0 == "Minimum idle age has not elapsed" }
+      ? allocation : nil
+  }
+  guard !candidates.isEmpty else { return preliminary }
+  let candidateIDs = Set(candidates.map(\.id))
+  let mentions = try transcriptMentions(
+    candidates, directory: transcriptDirectory, modifiedSince: modifiedSince)
+  return try allocations.enumerated().map { index, allocation in
+    candidateIDs.contains(allocation.id)
+      ? try preview(allocation, mention: mentions[allocation.id]) : preliminary[index]
   }
 }
