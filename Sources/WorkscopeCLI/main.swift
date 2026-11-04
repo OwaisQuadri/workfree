@@ -38,6 +38,7 @@ let help = """
     cleanup-now ID|--repo PATH|--all --min-idle 0h|24h|2w
       [--sessions-dir PATH] [--retire-session-claims] [--exclude-id ID]
     restore ID
+    remove-missing ID
     run ID [--owner TOKEN] -- COMMAND...
     --help
     --version
@@ -167,8 +168,8 @@ struct Arguments {
         "--repo", "--all", "--min-idle", "--sessions-dir", "--checkpoint",
         "--retire-session-claims", "--exclude-id",
       ]
-    case "inspect", "list", "keep", "unkeep", "recover", "revoke-cleanup", "restore", "preview",
-      "sweep":
+    case "inspect", "list", "keep", "unkeep", "recover", "revoke-cleanup", "restore",
+      "remove-missing", "preview", "sweep":
       allowed = []
     case "authorize-cleanup": allowed = ["--grace-seconds", "--disposable-path"]
     case "status": allowed = ["--since", "--refresh", "--detailed", "--details"]
@@ -431,6 +432,7 @@ do {
           disposablePaths: arguments.disposablePaths)
       case "revoke-cleanup": allocation = try registry.revokeCleanup(id)
       case "restore": allocation = try registry.restore(id)
+      case "remove-missing": allocation = try registry.removeMissing(id)
       case "run":
         exit(try registry.run(id, owner: arguments.options["--owner"], command: arguments.command))
       default: throw WorkscopeError("Unknown command")

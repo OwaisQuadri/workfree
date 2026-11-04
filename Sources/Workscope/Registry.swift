@@ -608,6 +608,24 @@ public struct Registry: Sendable {
     try withRegistry(stateDirectory) { try $0.allocation(id) }
   }
 
+  public func removeMissing(_ id: String) throws -> Allocation {
+    try withRegistry(stateDirectory, excluding: id) { store in
+      let allocation = try store.allocation(id)
+      try require(try !isPresent(allocation.path), "Checkout still exists")
+      try require(
+        [.blocked, .failed, .retained, .removed].contains(allocation.phase)
+          && !allocation.isRemovalPending, "Removal or creation is in progress")
+      try require(
+        allocation.recovery == nil && allocation.offloadCleanup == nil,
+        "Recovery record must remain available")
+      try require(
+        allocation.owners.isEmpty && (allocation.conversationClaims ?? []).isEmpty,
+        "Owners or conversation claims remain")
+      try store.removeMissing(allocation)
+      return allocation
+    }
+  }
+
   public func start(
     branch: String, repository: String, isCleanupAuthorized: Bool = false,
     base: String? = nil, path: String? = nil, provider: WorktreeProvider? = nil,
