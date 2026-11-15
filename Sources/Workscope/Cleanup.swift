@@ -222,43 +222,59 @@ func verifyFiles(_ allocation: Allocation, isCheckpointAllowed: Bool = false) th
     if !ignored.isEmpty { statusPaths.append(":(exclude,literal)" + relative) }
   }
   var regenerable: [String] = []
-  func check(_ status: String, isExpandable: Bool) throws {
-    for entry in status.split(separator: "\0") {
-      let text = String(entry)
-      guard text.hasPrefix("!! ") else {
-        if isCheckpointAllowed { continue }
-        throw WorkscopeError("Changed, staged, untracked, or ignored files remain")
-      }
-      let relative = String(text.dropFirst(3)).trimmingCharacters(
-        in: CharacterSet(charactersIn: "/"))
-      let path = allocation.path + "/" + relative
-      if targets.contains(where: { isWithin(path, $0) }) { continue }
-      if isExpandable && text.hasSuffix("/") && targets.contains(where: { isWithin($0, path) }) {
-        try check(
-          git(
-            allocation.path,
-            [
-              "--literal-pathspecs", "status", "--porcelain=v1", "-z", "--untracked-files=all",
-              "--ignored=traditional", "--ignore-submodules=none", "--", relative,
-            ]), isExpandable: false)
-        continue
-      }
-      try require(
-        isRegenerable(relative) && (try canonical(path)) == path
-          && (try git(allocation.path, ["--literal-pathspecs", "ls-files", "-z", "--", relative]))
-            .isEmpty,
-        "Unapproved ignored file: \(relative)")
+  func accept(_ relative: String, isDirectory: Bool) throws {
+    let path = allocation.path + "/" + relative
+    if targets.contains(where: { isWithin(path, $0) }) { return }
+    if isRegenerable(relative) {
+      try verifyRegenerable(allocation.path, relative)
       if !regenerable.contains(path) { regenerable.append(path) }
+      return
+    }
+    guard isDirectory && targets.contains(where: { isWithin($0, path) }) else {
+      throw WorkscopeError("Unapproved ignored file: \(relative)")
+    }
+    try require(try canonical(path) == path, "Unapproved ignored file: \(relative)")
+    for child in try FileManager.default.contentsOfDirectory(atPath: path).sorted() {
+      var info = stat()
+      try require(
+        lstat(path + "/" + child, &info) == 0, "Cannot inspect path: \(relative)/\(child)")
+      try accept(relative + "/" + child, isDirectory: info.st_mode & S_IFMT == S_IFDIR)
     }
   }
-  try check(
-    git(
-      allocation.path,
-      [
-        "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=matching",
-        "--ignore-submodules=none", "--",
-      ] + statusPaths), isExpandable: true)
+  let status = try git(
+    allocation.path,
+    [
+      "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=matching",
+      "--ignore-submodules=none", "--",
+    ] + statusPaths)
+  for entry in status.split(separator: "\0") {
+    let text = String(entry)
+    guard text.hasPrefix("!! ") else {
+      if isCheckpointAllowed { continue }
+      throw WorkscopeError("Changed, staged, untracked, or ignored files remain")
+    }
+    let reported = String(text.dropFirst(3))
+    try accept(
+      reported.trimmingCharacters(in: CharacterSet(charactersIn: "/")),
+      isDirectory: reported.hasSuffix("/"))
+  }
   return targets + regenerable
+}
+
+func verifyRegenerable(_ root: String, _ relative: String) throws {
+  let path = root + "/" + relative
+  try require(try canonical(path) == path, "Regenerable output contains an alias: \(relative)")
+  let tracked = try git(root, ["--literal-pathspecs", "ls-files", "-z", "--", relative])
+  let committed = try git(root, ["--literal-pathspecs", "ls-tree", "-r", "HEAD", "--", relative])
+  try require(
+    tracked.isEmpty && committed.isEmpty, "Regenerable output contains tracked files: \(relative)")
+  if let children = FileManager.default.enumerator(atPath: path) {
+    for case let child as String in children {
+      try require(
+        (child as NSString).lastPathComponent.lowercased() != ".git",
+        "Regenerable output contains a Git repository: \(relative)/\(child)")
+    }
+  }
 }
 
 let regenerableNames: Set<String> = [
@@ -438,6 +454,9 @@ func cleanup(
     try store.save(allocation)
     if let offload { try advanceCheckout(allocation, offload: offload) }
     for target in targets {
+      try require(
+        try canonical(target) == target && isWithin(target, allocation.path),
+        "Cleanup target changed: \(target)")
       if isOffload {
         let relative = String(target.dropFirst(allocation.path.count + 1))
         _ = try git(allocation.path, ["--literal-pathspecs", "clean", "-fdX", "--", relative])
