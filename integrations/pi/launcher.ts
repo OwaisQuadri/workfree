@@ -45,7 +45,7 @@ if (
   && native.flags.has("--retire-session-claims")
   && !native.flags.has("--session-id")
 ) {
-  console.error("Inside Pi, retire conversation claims with the native wf tool and isRetiringSessionClaims. It passes this conversation's identity; the shell form cannot.");
+  console.error("Inside Pi, retire conversation claims with the native wf tool and isRetiringSessionClaims. It passes this conversation's identity, Pi process, and checkouts, which a shell command does not have.");
   process.exit(2);
 }
 

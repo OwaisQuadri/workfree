@@ -101,7 +101,8 @@ test("signals sent to the linked launcher reach the executed process with the sa
 test("inside Pi, only offload and cleanup-now options that retire claims without a conversation identity are refused", async (t) => {
   const f = await fixture(t);
   await f.publish(bytes);
-  const { PI_SESSION_ID: _, ...outsidePi } = f.env;
+  const outsidePi: NodeJS.ProcessEnv = { ...f.env };
+  delete outsidePi.PI_SESSION_ID;
   const insidePi = { ...outsidePi, PI_SESSION_ID: "conversation" };
   const run = async (args: string[], env: NodeJS.ProcessEnv) => {
     const child = spawn(f.entry, args, { cwd: tmpdir(), env, stdio: "pipe" });
