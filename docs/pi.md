@@ -59,7 +59,7 @@ Configure Herdr to invoke that same linked entry rather than an older standalone
 
 The entry resolves the package from its own location, including through a symlink. It shares the Pi extension's revision bindings and immutable products.
 Each invocation captures the managed checkout's current revision. Complete `pi update --extensions` before invoking it to use the updated source.
-The launcher passes arguments and standard streams unchanged and preserves the native process's exit status or terminating signal.
+The launcher passes arguments and standard streams unchanged and preserves the native process's exit status or terminating signal. One exception applies inside Pi: when `PI_SESSION_ID` is set, the launcher refuses `offload` or `cleanup-now` with `--retire-session-claims` and no `--session-id`. It exits with status 2 and names the native `wf` tool with `isRetiringSessionClaims`, because only that tool passes the conversation identity.
 It ignores `WF_BIN`, so a shell entry pointing back to this launcher cannot recurse through the override. It does not update packages or change Pi settings.
 
 For users without Pi, the ordinary Swift build and `scripts/install.zsh` standalone installer remain available. That installer copies a fixed executable and does not make it follow Pi updates.

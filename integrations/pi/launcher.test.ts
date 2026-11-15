@@ -98,23 +98,47 @@ test("signals sent to the linked launcher reach the executed process with the sa
   assert.equal(signal, "SIGTERM");
 });
 
-test("inside Pi, the shell form refuses claim retirement without a conversation identity", async (t) => {
+test("inside Pi, only offload and cleanup-now options that retire claims without a conversation identity are refused", async (t) => {
   const f = await fixture(t);
   await f.publish(bytes);
-  const env = { ...f.env, PI_SESSION_ID: "conversation" };
-  await assert.rejects(execute(f.entry, ["cleanup-now", "id", "--min-idle", "24h", "--retire-session-claims"], { cwd: tmpdir(), env }), (error: unknown) => {
-    const result = error as { code: number; stdout: string; stderr: string };
-    assert.equal(result.code, 2);
-    assert.equal(result.stdout, "");
-    assert.match(result.stderr, /^Inside Pi, retire conversation claims with the native wf tool/);
-    return true;
-  });
-  const child = spawn(f.entry, ["cleanup-now", "--session-id", "conversation", "--retire-session-claims"], { cwd: tmpdir(), env, stdio: "pipe" });
-  const output: Buffer[] = [];
-  child.stdout.on("data", (chunk) => output.push(chunk));
-  child.stdin.end();
-  await once(child, "close");
-  assert.equal(Buffer.concat(output).toString(), `${JSON.stringify(["cleanup-now", "--session-id", "conversation", "--retire-session-claims"])}\n`);
+  const { PI_SESSION_ID: _, ...outsidePi } = f.env;
+  const insidePi = { ...outsidePi, PI_SESSION_ID: "conversation" };
+  const run = async (args: string[], env: NodeJS.ProcessEnv) => {
+    const child = spawn(f.entry, args, { cwd: tmpdir(), env, stdio: "pipe" });
+    const output: Buffer[] = [];
+    const errors: Buffer[] = [];
+    child.stdout.on("data", (chunk) => output.push(chunk));
+    child.stderr.on("data", (chunk) => errors.push(chunk));
+    child.stdin.end();
+    const [code] = await once(child, "close");
+    return { code, stdout: Buffer.concat(output).toString(), stderr: Buffer.concat(errors).toString() };
+  };
+  const passesThrough = async (args: string[], env: NodeJS.ProcessEnv) => {
+    assert.deepEqual(await run(args, env), { code: 23, stdout: `${JSON.stringify(args)}\n`, stderr: "native stderr\n" });
+  };
+
+  for (const action of ["cleanup-now", "offload"]) {
+    const refused = await run(["--repo", "/fixture", action, "--min-idle", "24h", "--retire-session-claims"], insidePi);
+    assert.equal(refused.code, 2);
+    assert.equal(refused.stdout, "");
+    assert.match(refused.stderr, /^Inside Pi, retire conversation claims with the native wf tool/);
+  }
+  await passesThrough(["cleanup-now", "--session-id", "conversation", "--retire-session-claims"], insidePi);
+  await passesThrough(["cleanup-now", "id", "--min-idle", "24h", "--retire-session-claims"], outsidePi);
+  await passesThrough(["run", "id", "--", "cleanup-now", "--retire-session-claims"], insidePi);
+  await passesThrough(["retain", "id", "--label", "--retire-session-claims"], insidePi);
+  await passesThrough(["offload-preview", "id", "--retire-session-claims"], insidePi);
+  await passesThrough(["list", "--retire-session-claims"], insidePi);
+});
+
+test("the launcher knows the same value options as the native parser", async () => {
+  const native = await readFile(new URL("../../Sources/WorkscopeCLI/main.swift", import.meta.url), "utf8");
+  const launcher = await readFile(new URL("launcher.ts", import.meta.url), "utf8");
+  const nativeList = native.match(/case ("--state-dir"[^:]*):/)?.[1];
+  const launcherList = launcher.match(/new Set\(\[([^\]]*"--state-dir"[^\]]*)\]\)/)?.[1];
+  assert.ok(nativeList && launcherList);
+  const options = (list: string) => new Set(list.match(/"--[a-z-]+"/g));
+  assert.deepEqual(options(launcherList), options(nativeList));
 });
 
 test("launcher reports bootstrap errors without falling back to WF_BIN or a standalone executable", async (t) => {

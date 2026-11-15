@@ -41,6 +41,36 @@ final class OneOffTests: XCTestCase {
       try String(contentsOfFile: allocation.path + "/tracked", encoding: .utf8), "working")
   }
 
+  func testClaimRetirementRefusesAZeroIdleAgeWithTheFixInTheMessage() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.registry.start(
+      branch: UUID().uuidString, repository: fixture.repository, provider: .git)
+    let expected = "Claim retirement requires a minimum idle age above 0h, such as 24h"
+    let attempts: [() throws -> Void] = [
+      {
+        _ = try fixture.registry.oneOffPreview(
+          id: allocation.id, minimumIdle: 0, transcriptDirectory: fixture.root,
+          isRetiringSessionClaims: true)
+      },
+      {
+        _ = try fixture.registry.offload(
+          id: allocation.id, minimumIdle: 0, transcriptDirectory: fixture.root, isRemote: false,
+          isRetiringSessionClaims: true)
+      },
+      {
+        _ = try fixture.registry.oneOffCleanup(
+          id: allocation.id, minimumIdle: 0, transcriptDirectory: fixture.root,
+          isRetiringSessionClaims: true)
+      },
+    ]
+    for attempt in attempts {
+      XCTAssertThrowsError(try attempt()) { error in
+        XCTAssertEqual((error as? WorkscopeError)?.description, expected)
+      }
+    }
+    XCTAssertTrue(FileManager.default.fileExists(atPath: allocation.path))
+  }
+
   func testIdleOffloadRetiresOnlyTheCurrentConversationAfterCheckpoint() throws {
     let fixture = try Fixture()
     let allocation = try fixture.registry.start(
