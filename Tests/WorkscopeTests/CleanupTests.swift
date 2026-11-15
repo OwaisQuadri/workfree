@@ -246,8 +246,9 @@ final class CleanupTests: XCTestCase {
     let expected = [
       "repository": "contains a repository", "mercurial": "contains a repository",
       "alias": "contains an alias", "committed": "contains tracked files",
+      "unreadable": "Cannot inspect regenerable output",
     ]
-    for name in ["repository", "mercurial", "alias", "committed"] {
+    for name in ["repository", "mercurial", "alias", "committed", "unreadable"] {
       let allocation = try fixture.start(isAuthorized: false)
       if name == "committed" {
         let package = allocation.path + "/node_modules/pkg"
@@ -272,6 +273,12 @@ final class CleanupTests: XCTestCase {
           atPath: preserved, withIntermediateDirectories: true)
       } else if name == "committed" {
         preserved = allocation.path + "/node_modules/pkg/index.js"
+      } else if name == "unreadable" {
+        preserved = allocation.path + "/node_modules/locked"
+        try FileManager.default.createDirectory(
+          atPath: preserved + "/.git", withIntermediateDirectories: true)
+        try FileManager.default.setAttributes(
+          [.posixPermissions: 0o000], ofItemAtPath: preserved)
       } else {
         let outside = fixture.root + "/outside-alias"
         try FileManager.default.createDirectory(atPath: outside, withIntermediateDirectories: true)
@@ -286,6 +293,11 @@ final class CleanupTests: XCTestCase {
       XCTAssertNotEqual(blocked.phase, .removed, name)
       XCTAssertTrue(blocked.reason?.contains(expected[name]!) == true, blocked.reason ?? "")
       XCTAssertTrue(FileManager.default.fileExists(atPath: preserved))
+      if name == "unreadable" {
+        try FileManager.default.setAttributes(
+          [.posixPermissions: 0o755], ofItemAtPath: preserved)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: preserved + "/.git"))
+      }
     }
   }
 
