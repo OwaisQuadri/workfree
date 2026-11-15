@@ -90,7 +90,7 @@ wf start feature/example --repo "$PWD"
 
 Repository-specific setup records authority in the private registry for the repository's canonical Git common directory, persistent volume identifier, and inode. Only new allocations inherit it without explicit migration. Repository replacement at the same path does not inherit repository-specific authority. Global authority covers new repositories too. Exclusions use canonical primary-repository paths, so they survive replacement at the same path. A repository-specific policy takes precedence over the global policy.
 
-Normal Pi starts inherit the saved policy without a dialog. Without a policy, normal starts remain valid but unauthorized for cleanup. Inherited allocations wait at least 24 hours after the last blocking owner or conversation leaves, even though policy setup still records a default grace value of 60 seconds. Explicit per-allocation grants use their configured grace value. Standing policy grants no disposable paths, so ignored files remain protected.
+Normal Pi starts inherit the saved policy without a dialog. Without a policy, normal starts remain valid but unauthorized for cleanup. Inherited allocations wait at least 24 hours after the last blocking owner or conversation leaves, even though policy setup still records a default grace value of 60 seconds. Explicit per-allocation grants use their configured grace value. Standing policy grants no disposable paths, so ignored files other than known regenerable output remain protected.
 
 Revoke repository authority with:
 
@@ -116,7 +116,7 @@ The first eligible event starts the grace period. Acquiring an owner resets it.
 Owner releases and later sweeps evaluate eligibility again.
 New authority requires an explicit operator CLI setup or allocation grant. The model-facing tool cannot grant permission and returns concrete setup instructions instead of asking for confirmation. Direct shell grants record the operator's instruction without a second prompt. Explicit allocation grants replace inherited provenance; allocation revocation never re-enrolls under a standing policy.
 
-Policy offload snapshots tracked and untracked contents in a flagged commit on `origin` under `workfree/offload/<allocation>`. Removal waits for a verified push, then advances the checkout's branch and index to that commit without overwriting working files. The provider refuses removal if new changes appear. A failed removal can leave that checkout at the checkpoint; the prior staged and working states remain in the remote history. Missing or failed remotes retain the checkout. Ignored files remain blocked unless explicitly disposable. The primary checkout remains in place.
+Policy offload snapshots tracked and untracked contents in a flagged commit on `origin` under `workfree/offload/<allocation>`. Removal waits for a verified push, then advances the checkout's branch and index to that commit without overwriting working files. The provider refuses removal if new changes appear. A failed removal can leave that checkout at the checkpoint; the prior staged and working states remain in the remote history. Missing or failed remotes retain the checkout. Ignored files remain blocked unless explicitly disposable or known regenerable output. The primary checkout remains in place.
 Each removal also preserves the exact commit under `refs/workfree/recovery/` in the surviving local repository.
 Restore recreates that commit on a fresh branch using the recorded provider. It refuses an occupied destination.
 The local recovery reference protects legacy cleanup against checkout removal, not loss of the surviving repository or disk.
@@ -183,7 +183,7 @@ Keep ordinary commits, fetches, pushes, and rebases in Git. Workfree manages che
 
 ## Safety boundaries
 
-Cleanup is disabled unless you explicitly grant allocation permission or a new allocation inherits recorded operator repository authority. Modified, staged, untracked, or uncertain checkout data blocks removal. Ignored files also block removal unless an explicit policy names their generated path as disposable. Existing worktrees are not automatically adopted.
+Cleanup is disabled unless you explicitly grant allocation permission or a new allocation inherits recorded operator repository authority. Modified, staged, untracked, or uncertain checkout data blocks removal. Ignored files also block removal unless an explicit policy names their generated path as disposable, or the entry is known regenerable output such as `node_modules`. See [docs/safety.md](docs/safety.md). Existing worktrees are not automatically adopted.
 
 Ownership is cooperative. Command exit does not prove that detached children have stopped. Execution owners remain until their scope is explicitly closed. Workfree does not detect or contain arbitrary processes using a checkout.
 

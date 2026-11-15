@@ -175,6 +175,144 @@ final class CleanupTests: XCTestCase {
     XCTAssertNotNil(result.recovery)
   }
 
+  func testRegenerableIgnoredDirectoriesAreRemovedWithoutApprovalOrOverflow() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.start(isAuthorized: false)
+    try Data("ignored/\nnode_modules/\n.DS_Store\n".utf8).write(
+      to: URL(fileURLWithPath: allocation.path + "/.gitignore"))
+    _ = try git(allocation.path, ["commit", "-am", "Ignore packages"])
+    let directory =
+      "app/node_modules/"
+      + Array(repeating: String(repeating: "p", count: 90), count: 8).joined(separator: "/")
+    try FileManager.default.createDirectory(
+      atPath: allocation.path + "/" + directory, withIntermediateDirectories: true)
+    for index in 0..<6000 {
+      try Data().write(to: URL(fileURLWithPath: allocation.path + "/" + directory + "/\(index)"))
+    }
+    try Data().write(to: URL(fileURLWithPath: allocation.path + "/app/.DS_Store"))
+    _ = try fixture.registry.authorizeCleanup(allocation.id, graceSeconds: 0)
+    _ = try fixture.registry.sweep()
+    let result = try fixture.registry.inspect(allocation.id)
+    XCTAssertEqual(result.phase, .removed, result.reason ?? "")
+  }
+
+  func testApprovedPathInsideIgnoredDirectoryStillChecksItsSiblings() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.start(isAuthorized: false)
+    let cache =
+      "ignored/cache/"
+      + Array(repeating: String(repeating: "c", count: 90), count: 8).joined(separator: "/")
+    try FileManager.default.createDirectory(
+      atPath: allocation.path + "/" + cache, withIntermediateDirectories: true)
+    for index in 0..<6000 {
+      try Data().write(to: URL(fileURLWithPath: allocation.path + "/" + cache + "/\(index)"))
+    }
+    try FileManager.default.createDirectory(
+      atPath: allocation.path + "/ignored/node_modules/pkg", withIntermediateDirectories: true)
+    try Data().write(
+      to: URL(fileURLWithPath: allocation.path + "/ignored/node_modules/pkg/index.js"))
+    let sibling = allocation.path + "/ignored/private"
+    try Data("private".utf8).write(to: URL(fileURLWithPath: sibling))
+    _ = try fixture.registry.authorizeCleanup(
+      allocation.id, graceSeconds: 0, disposablePaths: ["ignored/cache"])
+    _ = try fixture.registry.sweep()
+    let blocked = try fixture.registry.inspect(allocation.id)
+    XCTAssertTrue(
+      blocked.reason?.contains("Unapproved ignored file: ignored/private") == true,
+      blocked.reason ?? "")
+    XCTAssertTrue(FileManager.default.fileExists(atPath: sibling))
+    try FileManager.default.removeItem(atPath: sibling)
+    _ = try fixture.registry.sweep()
+    let removed = try fixture.registry.inspect(allocation.id)
+    XCTAssertEqual(removed.phase, .removed, removed.reason ?? "")
+  }
+
+  func testFinishRemovesRegenerableOutputWithoutApproval() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.start()
+    try Data("ignored/\nnode_modules/\n".utf8).write(
+      to: URL(fileURLWithPath: allocation.path + "/.gitignore"))
+    _ = try git(allocation.path, ["commit", "-am", "Ignore packages"])
+    try FileManager.default.createDirectory(
+      atPath: allocation.path + "/node_modules/pkg", withIntermediateDirectories: true)
+    try Data().write(to: URL(fileURLWithPath: allocation.path + "/node_modules/pkg/index.js"))
+    let finished = try fixture.registry.finish(allocation.id)
+    XCTAssertEqual(finished.phase, .removed, finished.reason ?? "")
+    XCTAssertFalse(FileManager.default.fileExists(atPath: allocation.path))
+  }
+
+  func testRegenerableOutputWithRepositoryOrAliasBlocksCleanup() throws {
+    let fixture = try Fixture()
+    let expected = [
+      "repository": "contains a repository", "mercurial": "contains a repository",
+      "sapling": "contains a repository", "fossil": "contains a repository",
+      "alias": "contains an alias", "committed": "contains tracked files",
+      "unreadable": "Cannot inspect regenerable output",
+    ]
+    for name in [
+      "repository", "mercurial", "sapling", "fossil", "alias", "committed", "unreadable",
+    ] {
+      let allocation = try fixture.start(isAuthorized: false)
+      if name == "committed" {
+        let package = allocation.path + "/node_modules/pkg"
+        try FileManager.default.createDirectory(atPath: package, withIntermediateDirectories: true)
+        try Data("committed".utf8).write(to: URL(fileURLWithPath: package + "/index.js"))
+        _ = try git(allocation.path, ["add", "--force", "node_modules"])
+        _ = try git(allocation.path, ["commit", "-m", "Commit packages"])
+        _ = try git(allocation.path, ["rm", "-r", "--cached", "-q", "node_modules"])
+      }
+      try Data("ignored/\nnode_modules\n".utf8).write(
+        to: URL(fileURLWithPath: allocation.path + "/.gitignore"))
+      _ = try git(allocation.path, ["commit", "-m", "Ignore packages", "--", ".gitignore"])
+      let preserved: String
+      if name == "repository" {
+        let nested = allocation.path + "/node_modules/editable"
+        try FileManager.default.createDirectory(atPath: nested, withIntermediateDirectories: true)
+        _ = try command("/usr/bin/git", ["init", "-q", nested])
+        preserved = nested + "/.git"
+      } else if name == "mercurial" {
+        preserved = allocation.path + "/node_modules/editable/.hg"
+        try FileManager.default.createDirectory(
+          atPath: preserved, withIntermediateDirectories: true)
+      } else if name == "sapling" {
+        preserved = allocation.path + "/node_modules/editable/.sl"
+        try FileManager.default.createDirectory(
+          atPath: preserved, withIntermediateDirectories: true)
+      } else if name == "fossil" {
+        try FileManager.default.createDirectory(
+          atPath: allocation.path + "/node_modules/editable", withIntermediateDirectories: true)
+        preserved = allocation.path + "/node_modules/editable/_FOSSIL_"
+        try Data().write(to: URL(fileURLWithPath: preserved))
+      } else if name == "committed" {
+        preserved = allocation.path + "/node_modules/pkg/index.js"
+      } else if name == "unreadable" {
+        preserved = allocation.path + "/node_modules/locked"
+        try FileManager.default.createDirectory(
+          atPath: preserved + "/.git", withIntermediateDirectories: true)
+        try FileManager.default.setAttributes(
+          [.posixPermissions: 0o000], ofItemAtPath: preserved)
+      } else {
+        let outside = fixture.root + "/outside-alias"
+        try FileManager.default.createDirectory(atPath: outside, withIntermediateDirectories: true)
+        try Data("keep".utf8).write(to: URL(fileURLWithPath: outside + "/keep"))
+        try FileManager.default.createSymbolicLink(
+          atPath: allocation.path + "/node_modules", withDestinationPath: outside)
+        preserved = outside + "/keep"
+      }
+      _ = try fixture.registry.authorizeCleanup(allocation.id, graceSeconds: 0)
+      _ = try fixture.registry.sweep()
+      let blocked = try fixture.registry.inspect(allocation.id)
+      XCTAssertNotEqual(blocked.phase, .removed, name)
+      XCTAssertTrue(blocked.reason?.contains(expected[name]!) == true, blocked.reason ?? "")
+      XCTAssertTrue(FileManager.default.fileExists(atPath: preserved))
+      if name == "unreadable" {
+        try FileManager.default.setAttributes(
+          [.posixPermissions: 0o755], ofItemAtPath: preserved)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: preserved + "/.git"))
+      }
+    }
+  }
+
   func testDisposableParentPreservesUnignoredFilesInCheckpoint() throws {
     let fixture = try Fixture()
     let allocation = try fixture.start(isAuthorized: false)

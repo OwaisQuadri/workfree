@@ -221,10 +221,30 @@ func verifyFiles(_ allocation: Allocation, isCheckpointAllowed: Bool = false) th
       accepting: [0, 1])
     if !ignored.isEmpty { statusPaths.append(":(exclude,literal)" + relative) }
   }
+  var regenerable: [String] = []
+  func accept(_ relative: String, isDirectory: Bool) throws {
+    let path = allocation.path + "/" + relative
+    if targets.contains(where: { isWithin(path, $0) }) { return }
+    if isRegenerable(relative) {
+      try verifyRegenerableContents(allocation.path, relative)
+      if !regenerable.contains(path) { regenerable.append(path) }
+      return
+    }
+    guard isDirectory && targets.contains(where: { isWithin($0, path) }) else {
+      throw WorkscopeError("Unapproved ignored file: \(relative)")
+    }
+    try require(try canonical(path) == path, "Unapproved ignored file: \(relative)")
+    for child in try FileManager.default.contentsOfDirectory(atPath: path).sorted() {
+      var info = stat()
+      try require(
+        lstat(path + "/" + child, &info) == 0, "Cannot inspect path: \(relative)/\(child)")
+      try accept(relative + "/" + child, isDirectory: info.st_mode & S_IFMT == S_IFDIR)
+    }
+  }
   let status = try git(
     allocation.path,
     [
-      "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored",
+      "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=matching",
       "--ignore-submodules=none", "--",
     ] + statusPaths)
   for entry in status.split(separator: "\0") {
@@ -233,11 +253,60 @@ func verifyFiles(_ allocation: Allocation, isCheckpointAllowed: Bool = false) th
       if isCheckpointAllowed { continue }
       throw WorkscopeError("Changed, staged, untracked, or ignored files remain")
     }
-    let relative = String(text.dropFirst(3)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-    let path = allocation.path + "/" + relative
-    try require(targets.contains { isWithin(path, $0) }, "Unapproved ignored file: \(relative)")
+    let reported = String(text.dropFirst(3))
+    try accept(
+      reported.trimmingCharacters(in: CharacterSet(charactersIn: "/")),
+      isDirectory: reported.hasSuffix("/"))
   }
-  return targets
+  if !regenerable.isEmpty {
+    let relatives = regenerable.map { String($0.dropFirst(allocation.path.count + 1)) }
+    let tracked = try git(
+      allocation.path, ["--literal-pathspecs", "ls-files", "-z", "--"] + relatives)
+    let committed = try git(
+      allocation.path,
+      ["--literal-pathspecs", "ls-tree", "-r", "-z", "--name-only", "HEAD", "--"] + relatives)
+    let first = (tracked + "\0" + committed).split(separator: "\0").first
+    try require(
+      first == nil, "Regenerable output contains tracked files: \(first.map(String.init) ?? "")")
+  }
+  return targets + regenerable
+}
+
+let repositoryMarkers: Set<String> = [
+  ".git", ".hg", ".svn", ".jj", ".bzr", "_darcs", ".pijul", ".sl", ".fslckout", "_fossil_",
+]
+
+func verifyRegenerableContents(_ root: String, _ relative: String) throws {
+  let path = root + "/" + relative
+  try require(try canonical(path) == path, "Regenerable output contains an alias: \(relative)")
+  var info = stat()
+  try require(lstat(path, &info) == 0, "Cannot inspect regenerable output: \(relative)")
+  guard info.st_mode & S_IFMT == S_IFDIR else { return }
+  var unreadable: String?
+  let children = FileManager.default.enumerator(
+    at: URL(fileURLWithPath: path), includingPropertiesForKeys: nil,
+    errorHandler: { url, _ in
+      unreadable = url.path
+      return false
+    })
+  while let child = children?.nextObject() as? URL {
+    try require(
+      !repositoryMarkers.contains(child.lastPathComponent.lowercased()),
+      "Regenerable output contains a repository: \(child.path)")
+  }
+  try require(
+    unreadable == nil, "Cannot inspect regenerable output: \(unreadable ?? relative)")
+}
+
+let regenerableNames: Set<String> = [
+  "node_modules", ".turbo", ".expo", "expo-env.d.ts", ".next", ".nuxt", ".svelte-kit",
+  ".parcel-cache", ".dart_tool", ".flutter-plugins", ".flutter-plugins-dependencies", "Pods",
+  ".gradle", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".venv", ".DS_Store",
+]
+
+func isRegenerable(_ relative: String) -> Bool {
+  let name = (relative as NSString).lastPathComponent
+  return regenerableNames.contains(name) || name.hasSuffix(".tsbuildinfo")
 }
 
 func verifyRecovery(_ allocation: Allocation) throws {
@@ -405,6 +474,9 @@ func cleanup(
     try store.save(allocation)
     if let offload { try advanceCheckout(allocation, offload: offload) }
     for target in targets {
+      try require(
+        try canonical(target) == target && isWithin(target, allocation.path),
+        "Cleanup target changed: \(target)")
       if isOffload {
         let relative = String(target.dropFirst(allocation.path.count + 1))
         _ = try git(allocation.path, ["--literal-pathspecs", "clean", "-fdX", "--", relative])
