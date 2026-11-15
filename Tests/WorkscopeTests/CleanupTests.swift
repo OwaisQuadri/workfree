@@ -175,6 +175,50 @@ final class CleanupTests: XCTestCase {
     XCTAssertNotNil(result.recovery)
   }
 
+  func testRegenerableIgnoredDirectoriesAreRemovedWithoutApprovalOrOverflow() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.start(isAuthorized: false)
+    try Data("ignored/\nnode_modules/\n.DS_Store\n".utf8).write(
+      to: URL(fileURLWithPath: allocation.path + "/.gitignore"))
+    _ = try git(allocation.path, ["commit", "-am", "Ignore packages"])
+    let directory =
+      "app/node_modules/"
+      + Array(repeating: String(repeating: "p", count: 90), count: 8).joined(separator: "/")
+    try FileManager.default.createDirectory(
+      atPath: allocation.path + "/" + directory, withIntermediateDirectories: true)
+    for index in 0..<6000 {
+      try Data().write(to: URL(fileURLWithPath: allocation.path + "/" + directory + "/\(index)"))
+    }
+    try Data().write(to: URL(fileURLWithPath: allocation.path + "/app/.DS_Store"))
+    _ = try fixture.registry.authorizeCleanup(allocation.id, graceSeconds: 0)
+    _ = try fixture.registry.sweep()
+    let result = try fixture.registry.inspect(allocation.id)
+    XCTAssertEqual(result.phase, .removed, result.reason ?? "")
+  }
+
+  func testApprovedPathInsideIgnoredDirectoryStillChecksItsSiblings() throws {
+    let fixture = try Fixture()
+    let allocation = try fixture.start(isAuthorized: false)
+    try FileManager.default.createDirectory(
+      atPath: allocation.path + "/ignored/cache", withIntermediateDirectories: true)
+    try Data("rebuildable".utf8).write(
+      to: URL(fileURLWithPath: allocation.path + "/ignored/cache/output"))
+    let sibling = allocation.path + "/ignored/private"
+    try Data("private".utf8).write(to: URL(fileURLWithPath: sibling))
+    _ = try fixture.registry.authorizeCleanup(
+      allocation.id, graceSeconds: 0, disposablePaths: ["ignored/cache"])
+    _ = try fixture.registry.sweep()
+    let blocked = try fixture.registry.inspect(allocation.id)
+    XCTAssertTrue(
+      blocked.reason?.contains("Unapproved ignored file: ignored/private") == true,
+      blocked.reason ?? "")
+    XCTAssertTrue(FileManager.default.fileExists(atPath: sibling))
+    try FileManager.default.removeItem(atPath: sibling)
+    _ = try fixture.registry.sweep()
+    let removed = try fixture.registry.inspect(allocation.id)
+    XCTAssertEqual(removed.phase, .removed, removed.reason ?? "")
+  }
+
   func testDisposableParentPreservesUnignoredFilesInCheckpoint() throws {
     let fixture = try Fixture()
     let allocation = try fixture.start(isAuthorized: false)

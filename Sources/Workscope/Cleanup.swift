@@ -221,23 +221,56 @@ func verifyFiles(_ allocation: Allocation, isCheckpointAllowed: Bool = false) th
       accepting: [0, 1])
     if !ignored.isEmpty { statusPaths.append(":(exclude,literal)" + relative) }
   }
-  let status = try git(
-    allocation.path,
-    [
-      "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored",
-      "--ignore-submodules=none", "--",
-    ] + statusPaths)
-  for entry in status.split(separator: "\0") {
-    let text = String(entry)
-    guard text.hasPrefix("!! ") else {
-      if isCheckpointAllowed { continue }
-      throw WorkscopeError("Changed, staged, untracked, or ignored files remain")
+  var regenerable: [String] = []
+  func check(_ status: String, isExpandable: Bool) throws {
+    for entry in status.split(separator: "\0") {
+      let text = String(entry)
+      guard text.hasPrefix("!! ") else {
+        if isCheckpointAllowed { continue }
+        throw WorkscopeError("Changed, staged, untracked, or ignored files remain")
+      }
+      let relative = String(text.dropFirst(3)).trimmingCharacters(
+        in: CharacterSet(charactersIn: "/"))
+      let path = allocation.path + "/" + relative
+      if targets.contains(where: { isWithin(path, $0) }) { continue }
+      if isExpandable && text.hasSuffix("/") && targets.contains(where: { isWithin($0, path) }) {
+        try check(
+          git(
+            allocation.path,
+            [
+              "--literal-pathspecs", "status", "--porcelain=v1", "-z", "--untracked-files=all",
+              "--ignored=traditional", "--ignore-submodules=none", "--", relative,
+            ]), isExpandable: false)
+        continue
+      }
+      try require(
+        isRegenerable(relative) && (try canonical(path)) == path
+          && (try git(allocation.path, ["--literal-pathspecs", "ls-files", "-z", "--", relative]))
+            .isEmpty,
+        "Unapproved ignored file: \(relative)")
+      if !regenerable.contains(path) { regenerable.append(path) }
     }
-    let relative = String(text.dropFirst(3)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-    let path = allocation.path + "/" + relative
-    try require(targets.contains { isWithin(path, $0) }, "Unapproved ignored file: \(relative)")
   }
-  return targets
+  try check(
+    git(
+      allocation.path,
+      [
+        "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=matching",
+        "--ignore-submodules=none", "--",
+      ] + statusPaths), isExpandable: true)
+  return targets + regenerable
+}
+
+let regenerableNames: Set<String> = [
+  "node_modules", ".turbo", ".expo", "expo-env.d.ts", ".next", ".nuxt", ".svelte-kit",
+  ".parcel-cache", ".dart_tool", ".flutter-plugins", ".flutter-plugins-dependencies", ".build",
+  "DerivedData", "Pods", ".gradle", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+  ".venv", ".DS_Store",
+]
+
+func isRegenerable(_ relative: String) -> Bool {
+  let name = (relative as NSString).lastPathComponent
+  return regenerableNames.contains(name) || name.hasSuffix(".tsbuildinfo")
 }
 
 func verifyRecovery(_ allocation: Allocation) throws {
