@@ -245,10 +245,13 @@ final class CleanupTests: XCTestCase {
     let fixture = try Fixture()
     let expected = [
       "repository": "contains a repository", "mercurial": "contains a repository",
+      "sapling": "contains a repository", "fossil": "contains a repository",
       "alias": "contains an alias", "committed": "contains tracked files",
       "unreadable": "Cannot inspect regenerable output",
     ]
-    for name in ["repository", "mercurial", "alias", "committed", "unreadable"] {
+    for name in [
+      "repository", "mercurial", "sapling", "fossil", "alias", "committed", "unreadable",
+    ] {
       let allocation = try fixture.start(isAuthorized: false)
       if name == "committed" {
         let package = allocation.path + "/node_modules/pkg"
@@ -271,6 +274,15 @@ final class CleanupTests: XCTestCase {
         preserved = allocation.path + "/node_modules/editable/.hg"
         try FileManager.default.createDirectory(
           atPath: preserved, withIntermediateDirectories: true)
+      } else if name == "sapling" {
+        preserved = allocation.path + "/node_modules/editable/.sl"
+        try FileManager.default.createDirectory(
+          atPath: preserved, withIntermediateDirectories: true)
+      } else if name == "fossil" {
+        try FileManager.default.createDirectory(
+          atPath: allocation.path + "/node_modules/editable", withIntermediateDirectories: true)
+        preserved = allocation.path + "/node_modules/editable/_FOSSIL_"
+        try Data().write(to: URL(fileURLWithPath: preserved))
       } else if name == "committed" {
         preserved = allocation.path + "/node_modules/pkg/index.js"
       } else if name == "unreadable" {

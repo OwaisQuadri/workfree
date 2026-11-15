@@ -47,7 +47,7 @@ One exception needs no grant: an ignored entry whose name is known package or bu
 
 - The entry or a parent is a symbolic link.
 - The index or `HEAD` tracks a file inside it.
-- It contains a version-control directory: `.git`, `.hg`, `.svn`, `.jj`, `.bzr`, `_darcs`, or `.pijul`. A nested repository can hold local work that a reinstall cannot recreate.
+- It contains a version-control directory: `.git`, `.hg`, `.svn`, `.jj`, `.bzr`, `_darcs`, `.pijul`, `.sl`, `.fslckout`, or `_FOSSIL_`. A nested repository can hold local work that a reinstall cannot recreate.
 - A folder inside it cannot be read.
 
 Every other ignored file, such as `.env`, still blocks cleanup.

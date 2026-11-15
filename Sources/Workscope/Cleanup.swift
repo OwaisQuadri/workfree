@@ -272,7 +272,9 @@ func verifyFiles(_ allocation: Allocation, isCheckpointAllowed: Bool = false) th
   return targets + regenerable
 }
 
-let repositoryMarkers: Set<String> = [".git", ".hg", ".svn", ".jj", ".bzr", "_darcs", ".pijul"]
+let repositoryMarkers: Set<String> = [
+  ".git", ".hg", ".svn", ".jj", ".bzr", "_darcs", ".pijul", ".sl", ".fslckout", "_fossil_",
+]
 
 func verifyRegenerableContents(_ root: String, _ relative: String) throws {
   let path = root + "/" + relative
