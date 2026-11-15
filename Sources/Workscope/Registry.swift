@@ -250,7 +250,7 @@ public struct Registry: Sendable {
     excludingID: String? = nil
   ) throws -> [OneOffPreview] {
     try require(
-      !isRetiringSessionClaims || minimumIdle > 0, "Claim retirement requires an idle age")
+      !isRetiringSessionClaims || minimumIdle > 0, "Claim retirement requires a minimum idle age above 0h, such as 24h")
     let retiring = isRetiringSessionClaims ? try requireConversationOutsideCheckouts() : nil
     return try withRegistry(stateDirectory) { store in
       let source = try repository.map(canonical)
@@ -283,7 +283,7 @@ public struct Registry: Sendable {
     excludingID: String? = nil
   ) throws -> [Allocation] {
     try require(
-      !isRetiringSessionClaims || minimumIdle > 0, "Claim retirement requires an idle age")
+      !isRetiringSessionClaims || minimumIdle > 0, "Claim retirement requires a minimum idle age above 0h, such as 24h")
     let retiring = isRetiringSessionClaims ? try requireConversationOutsideCheckouts() : nil
     return try withRegistry(stateDirectory) { store in
       let source = try repository.map(canonical)
@@ -377,7 +377,7 @@ public struct Registry: Sendable {
   ) throws -> [Allocation] {
     try require(minimumIdle >= 0 && minimumIdle.isFinite, "Invalid minimum idle age")
     try require(
-      !isRetiringSessionClaims || minimumIdle > 0, "Claim retirement requires an idle age")
+      !isRetiringSessionClaims || minimumIdle > 0, "Claim retirement requires a minimum idle age above 0h, such as 24h")
     let retiring = isRetiringSessionClaims ? try requireConversationOutsideCheckouts() : nil
     return try withRegistry(stateDirectory) { store in
       let source = try repository.map(canonical)

@@ -98,6 +98,25 @@ test("signals sent to the linked launcher reach the executed process with the sa
   assert.equal(signal, "SIGTERM");
 });
 
+test("inside Pi, the shell form refuses claim retirement without a conversation identity", async (t) => {
+  const f = await fixture(t);
+  await f.publish(bytes);
+  const env = { ...f.env, PI_SESSION_ID: "conversation" };
+  await assert.rejects(execute(f.entry, ["cleanup-now", "id", "--min-idle", "24h", "--retire-session-claims"], { cwd: tmpdir(), env }), (error: unknown) => {
+    const result = error as { code: number; stdout: string; stderr: string };
+    assert.equal(result.code, 2);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /^Inside Pi, retire conversation claims with the native wf tool/);
+    return true;
+  });
+  const child = spawn(f.entry, ["cleanup-now", "--session-id", "conversation", "--retire-session-claims"], { cwd: tmpdir(), env, stdio: "pipe" });
+  const output: Buffer[] = [];
+  child.stdout.on("data", (chunk) => output.push(chunk));
+  child.stdin.end();
+  await once(child, "close");
+  assert.equal(Buffer.concat(output).toString(), `${JSON.stringify(["cleanup-now", "--session-id", "conversation", "--retire-session-claims"])}\n`);
+});
+
 test("launcher reports bootstrap errors without falling back to WF_BIN or a standalone executable", async (t) => {
   const f = await fixture(t);
   await writeFile(join(f.tools, "swift"), '#!/bin/zsh\nprint -u2 -- "launcher compiler failure"\nexit 7\n', { mode: 0o755 });
