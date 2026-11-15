@@ -42,6 +42,15 @@ Removal requires matching allocation identity, a non-primary checkout, no unpres
 Workfree creates the recovery reference in the surviving local repository before recording removal intent.
 Under a recoverable policy, Workfree writes staged contents to an ancestor commit and tracked and untracked working-tree contents to a final checkpoint commit without changing the checkout's index or branch during snapshot creation. Restore checks out the final working-tree state; the staged snapshot remains in its commit history, not in the restored index. Workfree pushes the final commit to an allocation-specific `workfree/offload/` branch on `origin` and verifies the remote commit before removal. It then advances the checkout to that commit without overwriting working files. Removal refuses a checkout that becomes dirty after this step. A failed removal can leave the branch and index at the checkpoint; both prior states remain in the remote commits. A missing remote or failed push retains the checkout. Legacy cleanup without a recoverable policy still requires unchanged tracked and untracked files.
 Ignored files block cleanup unless an explicit policy names their generated path as disposable.
+
+One exception needs no grant: an ignored entry whose name is known package or build output. The names are `node_modules`, `.turbo`, `.expo`, `expo-env.d.ts`, `.next`, `.nuxt`, `.svelte-kit`, `.parcel-cache`, `.dart_tool`, `.flutter-plugins`, `.flutter-plugins-dependencies`, `Pods`, `.gradle`, `__pycache__`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.venv`, `.DS_Store`, and any `*.tsbuildinfo` file. `regenerableNames` in `Sources/Workscope/Cleanup.swift` is the source of this list. Cleanup deletes such an entry like a disposable path, but it blocks if any of these are true:
+
+- The entry or a parent is a symbolic link.
+- The index or `HEAD` tracks a file inside it.
+- It contains a version-control directory: `.git`, `.hg`, `.svn`, `.jj`, `.bzr`, `_darcs`, or `.pijul`. A nested repository can hold local work that a reinstall cannot recreate.
+- A folder inside it cannot be read.
+
+Every other ignored file, such as `.env`, still blocks cleanup.
 Tracked contents, aliases, and paths outside the checkout cannot qualify as disposable output.
 Git operations in progress also block cleanup.
 

@@ -243,17 +243,35 @@ final class CleanupTests: XCTestCase {
 
   func testRegenerableOutputWithRepositoryOrAliasBlocksCleanup() throws {
     let fixture = try Fixture()
-    for name in ["repository", "alias"] {
+    let expected = [
+      "repository": "contains a repository", "mercurial": "contains a repository",
+      "alias": "contains an alias", "committed": "contains tracked files",
+    ]
+    for name in ["repository", "mercurial", "alias", "committed"] {
       let allocation = try fixture.start(isAuthorized: false)
+      if name == "committed" {
+        let package = allocation.path + "/node_modules/pkg"
+        try FileManager.default.createDirectory(atPath: package, withIntermediateDirectories: true)
+        try Data("committed".utf8).write(to: URL(fileURLWithPath: package + "/index.js"))
+        _ = try git(allocation.path, ["add", "--force", "node_modules"])
+        _ = try git(allocation.path, ["commit", "-m", "Commit packages"])
+        _ = try git(allocation.path, ["rm", "-r", "--cached", "-q", "node_modules"])
+      }
       try Data("ignored/\nnode_modules\n".utf8).write(
         to: URL(fileURLWithPath: allocation.path + "/.gitignore"))
-      _ = try git(allocation.path, ["commit", "-am", "Ignore packages"])
+      _ = try git(allocation.path, ["commit", "-m", "Ignore packages", "--", ".gitignore"])
       let preserved: String
       if name == "repository" {
         let nested = allocation.path + "/node_modules/editable"
         try FileManager.default.createDirectory(atPath: nested, withIntermediateDirectories: true)
         _ = try command("/usr/bin/git", ["init", "-q", nested])
         preserved = nested + "/.git"
+      } else if name == "mercurial" {
+        preserved = allocation.path + "/node_modules/editable/.hg"
+        try FileManager.default.createDirectory(
+          atPath: preserved, withIntermediateDirectories: true)
+      } else if name == "committed" {
+        preserved = allocation.path + "/node_modules/pkg/index.js"
       } else {
         let outside = fixture.root + "/outside-alias"
         try FileManager.default.createDirectory(atPath: outside, withIntermediateDirectories: true)
@@ -266,10 +284,7 @@ final class CleanupTests: XCTestCase {
       _ = try fixture.registry.sweep()
       let blocked = try fixture.registry.inspect(allocation.id)
       XCTAssertNotEqual(blocked.phase, .removed, name)
-      XCTAssertTrue(
-        blocked.reason?.contains(
-          name == "repository" ? "contains a Git repository" : "contains an alias") == true,
-        blocked.reason ?? "")
+      XCTAssertTrue(blocked.reason?.contains(expected[name]!) == true, blocked.reason ?? "")
       XCTAssertTrue(FileManager.default.fileExists(atPath: preserved))
     }
   }
