@@ -33,7 +33,7 @@ impl Worktree {
         fn walk(dir: &Path, usage: &mut WorktreeStorage, skip: &mut HashSet<(u64, u64)>) -> Result<(), WorktreeErr> {
             for entry in std::fs::read_dir(dir).map_err(|e| WorktreeErr::StorageMeasurementError {path: dir.to_path_buf(), source: e})? {
                 let entry = entry.map_err(|e| WorktreeErr::StorageMeasurementError {path: dir.to_path_buf(), source: e})?;
-                let meta = std::fs::symlink_metadata(entry.path()).map_err(|e| WorktreeErr::StorageMeasurementError {path: entry.path(), source: e})?;
+                let meta = entry.metadata().map_err(|e| WorktreeErr::StorageMeasurementError {path: entry.path(), source: e})?;
 
                 if meta.is_dir() {
                     walk(&entry.path(), usage, skip)?;
