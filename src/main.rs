@@ -1,8 +1,9 @@
 mod commands;
 
 use commands::*;
-use std::time::Instant;
+use std::{error::Error, path::Path, time::Instant};
 use clap::Parser;
+use workfree_rust::{ Worktree };
 
 #[cfg(target_os = "linux")]
 fn peak_rss_kb() -> u64 {
@@ -19,6 +20,10 @@ fn peak_rss_kb() -> u64 {
 }
 
 fn main() {
+    // scratch
+    //
+
+    //
     // command
     let cli = Cli::parse();
     // time measurement start
@@ -31,12 +36,33 @@ fn main() {
         }
 
         Command::List { path } => {
-            if let Some(_path) = path {
-                // resolve path -> repo
-                print!("A bunch of worktrees in this current repo:\n\n  5.0 GB - worktrees/job-1\n  1.1 GB - worktrees/job-2")
-            } else {
-                // all repos
-                print!("A bunch of worktrees in all repos:\n\n  5.0 GB - worktrees/job-1\n  1.1 GB - worktrees/job-2\n  0.8 GB - worktrees/job-3\n  1.9 GB - worktrees/job-4")
+            match Worktree::list(path.as_deref().map(Path::new)) {
+                Ok(wts) => {
+                    println!("{}", wts.len());
+                    for wt in wts {
+                        let main_tag = if wt.is_main() { "(MAIN)" } else { "" };
+                        let branch_display = wt.branch.as_deref().unwrap_or("(DETACHED)");
+
+                        let full_storage = match wt.storage_used() {
+                            Ok(storage) => format!("{} bytes", storage.full),
+                            Err(e) => {
+                                if let Some(source) = e.source() {
+                                    format!("size unknown: {}", source)
+                                } else {
+                                    "size unknown".to_string()
+                                }
+                            }
+                        };
+                        println!(
+                            "branch {} at `{}` {} - {}",
+                            branch_display,
+                            wt.path.display(),
+                            main_tag,
+                            full_storage
+                        );
+                    }
+                },
+                Err(e) => eprintln!("{e}")
             }
         }
 
